@@ -68,7 +68,21 @@ Plain Docker volstaat dus:
 ```bash
 docker build -t rtsp-onvif-bridge:latest .
 
-docker run -d   --name onvif-bridge-controller   --restart unless-stopped   -p 8080:8080   -e ROLE=controller   -e BRIDGE_IMAGE=rtsp-onvif-bridge:latest   -e MACVLAN_NETWORK=camlan   -e MACVLAN_PARENT=br0   -e MACVLAN_IPAM=null   -e STATE_DIR=/state   -e DATA_DIR=/data   -v /var/run/docker.sock:/var/run/docker.sock   -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data   -v /mnt/user/appdata/rtsp-onvif-bridge/state:/state   rtsp-onvif-bridge:latest
+docker run -d \
+  --name onvif-bridge-controller \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -e ROLE=controller \
+  -e BRIDGE_IMAGE=rtsp-onvif-bridge:latest \
+  -e MACVLAN_NETWORK=camlan \
+  -e MACVLAN_PARENT=br0 \
+  -e MACVLAN_IPAM=null \
+  -e STATE_DIR=/state \
+  -e DATA_DIR=/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data \
+  -v /mnt/user/appdata/rtsp-onvif-bridge/state:/state \
+  rtsp-onvif-bridge:latest
 ```
 
 Pas `MACVLAN_PARENT` aan als je interface anders heet.
