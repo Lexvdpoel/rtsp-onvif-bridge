@@ -58,8 +58,30 @@ wget -qO- https://github.com/Lexvdpoel/rtsp-onvif-bridge/archive/refs/heads/main
 cp .env.example .env
 ```
 
-Voor `docker compose` heb je de plugin **Docker Compose Manager** nodig uit
-Community Applications. Daarna:
+### Zonder compose-plugin (eenvoudigst)
+
+Unraid levert `docker compose` niet mee, maar je hebt het hier ook niet nodig:
+het compose-bestand definieert maar één service, de controller. De
+camera-containers worden door de controller zelf aangemaakt via de Docker-socket.
+Plain Docker volstaat dus:
+
+```bash
+docker build -t rtsp-onvif-bridge:latest .
+
+docker run -d   --name onvif-bridge-controller   --restart unless-stopped   -p 8080:8080   -e ROLE=controller   -e BRIDGE_IMAGE=rtsp-onvif-bridge:latest   -e MACVLAN_NETWORK=camlan   -e MACVLAN_PARENT=br0   -e MACVLAN_IPAM=null   -e STATE_DIR=/state   -e DATA_DIR=/data   -v /var/run/docker.sock:/var/run/docker.sock   -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data   -v /mnt/user/appdata/rtsp-onvif-bridge/state:/state   rtsp-onvif-bridge:latest
+```
+
+Pas `MACVLAN_PARENT` aan als je interface anders heet.
+
+### Met compose-plugin
+
+Wil je toch compose, installeer dan **Compose Manager Plus** van *mstrhakr* uit
+Community Applications. Dat is de voortzetting van de inmiddels verouderde
+*Docker Compose Manager* van dcflachs en installeert de `docker compose`-CLI.
+
+Let op: **Docker-Compose-Maker** van *grtgbln* is iets anders — dat is een web-app
+om compose-bestanden mee samen te stellen, geen plugin die `docker compose`
+installeert. Die heb je hier niet aan.
 
 ```bash
 docker compose build
