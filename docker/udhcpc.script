@@ -1,0 +1,54 @@
+#!/bin/sh
+# busybox udhcpc callback script for the virtual camera interface.
+# Applies the lease the DHCP server hands out to this container's macvlan NIC.
+
+[ -z "$1" ] && { echo "udhcpc.script: called without action" >&2; exit 1; }
+
+RESOLV_CONF=/etc/resolv.conf
+
+case "$1" in
+    deconfig)
+        ip -4 addr flush dev "$interface"
+        ip link set dev "$interface" up
+        ;;
+
+    leasefail|nak)
+        echo "udhcpc: lease failed on $interface ($1)" >&2
+        ;;
+
+    renew|bound)
+        ip -4 addr flush dev "$interface"
+        ip addr add "$ip/${mask:-24}" ${broadcast:+broadcast $broadcast} dev "$interface"
+
+        if [ -n "$router" ]; then
+            while ip route del default dev "$interface" 2>/dev/null; do :; done
+            for r in $router; do
+                ip route add default via "$r" dev "$interface" 2>/dev/null || true
+                break
+            done
+        fi
+
+        if [ -n "$dns" ] || [ -n "$domain" ]; then
+            {
+                [ -n "$domain" ] && echo "search $domain"
+                for d in $dns; do echo "nameserver $d"; done
+            } > "$RESOLV_CONF" 2>/dev/null || true
+        fi
+
+        # Publish the lease so the Python side can read it without parsing ip(8).
+        if [ -n "$LEASE_FILE" ]; then
+            {
+                echo "ip=$ip"
+                echo "mask=${mask:-24}"
+                echo "router=${router%% *}"
+                echo "dns=$dns"
+                echo "domain=$domain"
+                echo "lease=$lease"
+                echo "serverid=$serverid"
+            } > "$LEASE_FILE"
+        fi
+        echo "udhcpc: $interface -> $ip/${mask:-24} via ${router%% *}"
+        ;;
+esac
+
+exit 0

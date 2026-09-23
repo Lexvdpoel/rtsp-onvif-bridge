@@ -1,0 +1,6 @@
+# The container runs Linux; CRLF in a shell script breaks its shebang.
+* text=auto eol=lf
+*.sh        text eol=lf
+*.py        text eol=lf
+*.yml       text eol=lf
+docker/udhcpc.script text eol=lf

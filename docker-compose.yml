@@ -1,0 +1,27 @@
+services:
+  controller:
+    build:
+      context: .
+    image: ${BRIDGE_IMAGE:-rtsp-onvif-bridge:latest}
+    container_name: onvif-bridge-controller
+    restart: unless-stopped
+    environment:
+      ROLE: controller
+      WEB_PORT: 8080
+      BRIDGE_IMAGE: ${BRIDGE_IMAGE:-rtsp-onvif-bridge:latest}
+      # macvlan network the virtual cameras are attached to.
+      MACVLAN_NETWORK: ${MACVLAN_NETWORK:-camlan}
+      MACVLAN_PARENT: ${MACVLAN_PARENT:-eth0}
+      # Optional: only used when the network has to be auto-created and you
+      # prefer Docker-managed IPAM over the DHCP-only "null" driver.
+      MACVLAN_SUBNET: ${MACVLAN_SUBNET:-}
+      MACVLAN_GATEWAY: ${MACVLAN_GATEWAY:-}
+      MACVLAN_IPAM: ${MACVLAN_IPAM:-null}
+      STATE_DIR: /state
+      DATA_DIR: /data
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+      - ./state:/state

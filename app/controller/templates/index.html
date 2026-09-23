@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTSP to ONVIF bridge</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #dfe3e8;
+    --text: #1c2128;
+    --muted: #6b7684;
+    --accent: #2f6fed;
+    --ok: #1f9d55;
+    --warn: #c47f00;
+    --err: #d23c3c;
+    --shadow: 0 1px 3px rgba(16, 24, 40, .08);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c;
+      --panel: #1c2027;
+      --border: #2c323b;
+      --text: #e6e9ee;
+      --muted: #97a0ad;
+      --accent: #5b8def;
+      --ok: #3fbf72;
+      --warn: #e0a33a;
+      --err: #ef6b6b;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 18px 24px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  header .spacer { flex: 1; }
+  main { padding: 24px; max-width: 1180px; margin: 0 auto; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+
+  button {
+    font: inherit; font-size: 14px; padding: 7px 13px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .banner {
+    padding: 12px 16px; border-radius: var(--radius); margin-bottom: 18px;
+    border: 1px solid var(--err); color: var(--err); background: var(--panel);
+  }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .card-head h2 { font-size: 16px; margin: 0; font-weight: 620; }
+  .card-head .spacer { flex: 1; }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 10px 22px; margin-top: 14px;
+  }
+  .field label { display: block; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--muted); margin-bottom: 2px; }
+  .field .value { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px; word-break: break-all; }
+  .copy { cursor: pointer; border-bottom: 1px dashed var(--border); }
+  .copy:hover { border-bottom-color: var(--accent); color: var(--accent); }
+
+  .empty { text-align: center; color: var(--muted); padding: 48px 20px; }
+
+  dialog {
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 0;
+    background: var(--panel); color: var(--text); width: min(720px, 94vw);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  .dialog-body { padding: 20px 22px; max-height: 76vh; overflow: auto; }
+  .dialog-foot {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 14px 22px; border-top: 1px solid var(--border);
+  }
+  fieldset { border: 0; padding: 0; margin: 0 0 18px; }
+  legend { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); padding: 0; margin-bottom: 8px; }
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .form-grid .wide { grid-column: 1 / -1; }
+  .form-grid label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; font: inherit; font-size: 14px; padding: 7px 9px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg); color: var(--text);
+  }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
+  .check input { width: 16px; height: 16px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  pre.logs {
+    margin: 0; padding: 14px; background: var(--bg); border-radius: 8px;
+    font-size: 12px; line-height: 1.5; max-height: 60vh; overflow: auto;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 16px; border-radius: 8px; box-shadow: var(--shadow);
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .toast.show { opacity: 1; }
+  .toast.err { border-color: var(--err); color: var(--err); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RTSP &rarr; ONVIF bridge</h1>
+  <span class="pill" id="dockerPill"><span class="dot"></span><span>checking…</span></span>
+  <span class="pill" id="netPill"><span class="dot"></span><span>network</span></span>
+  <div class="spacer"></div>
+  <button id="addBtn" class="primary">Add camera</button>
+</header>
+
+<main>
+  <div id="banner" class="banner" hidden></div>
+  <div id="list"></div>
+</main>
+
+<dialog id="editDialog">
+  <form id="editForm" method="dialog">
+    <div class="dialog-body">
+      <h2 id="editTitle" style="margin:0 0 18px;font-size:17px;">Add camera</h2>
+
+      <fieldset>
+        <legend>Source</legend>
+        <div class="form-grid">
+          <div class="wide">
+            <label for="f-name">Name</label>
+            <input type="text" id="f-name" name="name" required placeholder="Front door">
+          </div>
+          <div class="wide">
+            <label for="f-source">Main stream RTSP URL</label>
+            <input type="text" id="f-source" name="source_url" required
+                   placeholder="rtsp://user:pass@192.168.1.50:554/stream1">
+          </div>
+          <div class="wide">
+            <label for="f-source-sub">Sub stream RTSP URL (optional)</label>
+            <input type="text" id="f-source-sub" name="source_url_sub"
+                   placeholder="rtsp://user:pass@192.168.1.50:554/stream2">
+            <div class="hint">Adds a second ONVIF profile, which lets an NVR pick a low-resolution stream for previews.</div>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>ONVIF device</legend>
+        <div class="form-grid">
+          <div>
+            <label for="f-user">Username</label>
+            <input type="text" id="f-user" name="username" value="admin">
+          </div>
+          <div>
+            <label for="f-pass">Password</label>
+            <input type="password" id="f-pass" name="password" value="admin">
+          </div>
+          <div>
+            <label for="f-onvif-port">ONVIF port</label>
+            <input type="number" id="f-onvif-port" name="onvif_port" value="80" min="1" max="65535">
+          </div>
+          <div>
+            <label for="f-rtsp-port">RTSP port</label>
+            <input type="number" id="f-rtsp-port" name="rtsp_port" value="554" min="1" max="65535">
+          </div>
+          <div>
+            <label for="f-manufacturer">Manufacturer</label>
+            <input type="text" id="f-manufacturer" name="manufacturer" value="RTSP-ONVIF-Bridge">
+          </div>
+          <div>
+            <label for="f-model">Model</label>
+            <input type="text" id="f-model" name="model" value="VirtualCam">
+          </div>
+          <div class="check">
+            <input type="checkbox" id="f-require-auth" name="require_auth" checked>
+            <label for="f-require-auth" style="margin:0">Require authentication</label>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="f-snapshot" name="snapshot_enabled" checked>
+            <label for="f-snapshot" style="margin:0">Serve JPEG snapshots</label>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Stream handling</legend>
+        <div class="form-grid">
+          <div class="check">
+            <input type="checkbox" id="f-proxy" name="proxy" checked>
+            <label for="f-proxy" style="margin:0">Relay the stream through this camera's IP</label>
+          </div>
+          <div>
+            <label for="f-transport">RTSP transport to source</label>
+            <select id="f-transport" name="rtsp_transport">
+              <option value="tcp">TCP</option>
+              <option value="udp">UDP</option>
+            </select>
+          </div>
+          <div class="wide hint">
+            With the relay on, the NVR only ever talks to the virtual camera. Turn it off to hand the
+            NVR the upstream URL directly — lighter, but the real camera's address becomes visible.
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Advertised video properties</legend>
+        <div class="form-grid">
+          <div><label for="f-width">Width</label><input type="number" id="f-width" name="width" value="1920"></div>
+          <div><label for="f-height">Height</label><input type="number" id="f-height" name="height" value="1080"></div>
+          <div><label for="f-fps">Frame rate</label><input type="number" id="f-fps" name="fps" value="15"></div>
+          <div><label for="f-bitrate">Bitrate (kbps)</label><input type="number" id="f-bitrate" name="bitrate" value="4096"></div>
+          <div class="wide hint">
+            These values are metadata only — they tell the NVR what to expect and do not re-encode anything.
+            Match them to the real stream.
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset id="subFields">
+        <legend>Sub stream properties</legend>
+        <div class="form-grid">
+          <div><label for="f-width-sub">Width</label><input type="number" id="f-width-sub" name="width_sub" value="640"></div>
+          <div><label for="f-height-sub">Height</label><input type="number" id="f-height-sub" name="height_sub" value="360"></div>
+          <div><label for="f-fps-sub">Frame rate</label><input type="number" id="f-fps-sub" name="fps_sub" value="15"></div>
+          <div><label for="f-bitrate-sub">Bitrate (kbps)</label><input type="number" id="f-bitrate-sub" name="bitrate_sub" value="512"></div>
+        </div>
+      </fieldset>
+
+      <div class="check">
+        <input type="checkbox" id="f-enabled" name="enabled" checked>
+        <label for="f-enabled" style="margin:0">Start this camera now</label>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" id="cancelEdit">Cancel</button>
+      <button type="submit" class="primary" id="saveEdit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="logDialog">
+  <div class="dialog-body">
+    <h2 style="margin:0 0 14px;font-size:17px;" id="logTitle">Logs</h2>
+    <pre class="logs" id="logBody">loading…</pre>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" id="refreshLogs">Refresh</button>
+    <button type="button" class="primary" id="closeLogs">Close</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+let cameras = [];
+let editingId = null;
+let logCameraId = null;
+
+// ------------------------------------------------------------------ utilities
+
+function toast(message, isError) {
+  const el = $("#toast");
+  el.textContent = message;
+  el.classList.toggle("err", !!isError);
+  el.classList.add("show");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { detail: text }; }
+  if (!res.ok) throw new Error((data && data.detail) || res.statusText);
+  if (data && data.warning) toast(data.warning, true);
+  return data;
+}
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function copyText(value) {
+  navigator.clipboard.writeText(value)
+    .then(() => toast("Copied to clipboard"))
+    .catch(() => toast("Could not copy", true));
+}
+
+// ------------------------------------------------------------------- rendering
+
+function cameraHealth(cam) {
+  const docker = cam.docker || {};
+  const runtime = cam.runtime || {};
+  if (!cam.enabled) return { cls: "", label: "Stopped" };
+  if (docker.state !== "running") return { cls: "err", label: docker.state || "absent" };
+  if (runtime.status === "error") return { cls: "err", label: runtime.message || "Error" };
+  if (runtime.stale || !runtime.ip) return { cls: "warn", label: runtime.status || "starting" };
+  return { cls: "ok", label: "Running" };
+}
+
+function field(label, value, copyable) {
+  const safe = escapeHtml(value || "—");
+  const cls = copyable && value ? ' class="value copy" data-copy="' + escapeHtml(value) + '"' : ' class="value"';
+  return '<div class="field"><label>' + label + "</label><div" + cls + ">" + safe + "</div></div>";
+}
+
+function render() {
+  const list = $("#list");
+  if (!cameras.length) {
+    list.innerHTML = '<div class="empty">No cameras yet. Add an RTSP stream to publish it as an ONVIF device.</div>';
+    return;
+  }
+  list.innerHTML = cameras.map((cam) => {
+    const health = cameraHealth(cam);
+    const runtime = cam.runtime || {};
+    return `
+      <div class="card">
+        <div class="card-head">
+          <h2>${escapeHtml(cam.name)}</h2>
+          <span class="pill"><span class="dot ${health.cls}"></span><span>${escapeHtml(health.label)}</span></span>
+          <div class="spacer"></div>
+          <button data-action="${cam.enabled ? "stop" : "start"}" data-id="${cam.id}">
+            ${cam.enabled ? "Stop" : "Start"}
+          </button>
+          <button data-action="restart" data-id="${cam.id}">Restart</button>
+          <button data-action="logs" data-id="${cam.id}">Logs</button>
+          <button data-action="edit" data-id="${cam.id}">Edit</button>
+          <button data-action="delete" data-id="${cam.id}" class="danger">Delete</button>
+        </div>
+        <div class="grid">
+          ${field("MAC address", cam.mac, true)}
+          ${field("IP address (DHCP)", runtime.ip, true)}
+          ${field("DHCP hostname", cam.hostname, true)}
+          ${field("ONVIF endpoint", runtime.onvif_url, true)}
+          ${field("RTSP stream", runtime.rtsp_url, true)}
+          ${field("Source", cam.source_url, true)}
+          ${field("Credentials", cam.require_auth ? cam.username + " / ••••••" : "none")}
+          ${field("Container", cam.container)}
+        </div>
+      </div>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    cameras = await api("/api/cameras");
+    render();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const info = await api("/api/status");
+    const dockerPill = $("#dockerPill");
+    dockerPill.querySelector(".dot").className = "dot " + (info.docker ? "ok" : "err");
+    dockerPill.querySelector("span:last-child").textContent =
+      info.docker ? "Docker connected" : "Docker unreachable";
+
+    const netPill = $("#netPill");
+    const net = info.network || {};
+    const netOk = !!net.driver;
+    netPill.querySelector(".dot").className = "dot " + (netOk ? "ok" : "warn");
+    netPill.querySelector("span:last-child").textContent =
+      netOk ? `${net.name} on ${net.parent || "?"}` : "network not ready";
+
+    const banner = $("#banner");
+    banner.hidden = !info.error;
+    banner.textContent = info.error || "";
+  } catch (err) {
+    $("#banner").hidden = false;
+    $("#banner").textContent = err.message;
+  }
+}
+
+// --------------------------------------------------------------------- editing
+
+function fillForm(cam) {
+  const form = $("#editForm");
+  form.reset();
+  const source = cam || {};
+  for (const element of form.elements) {
+    if (!element.name) continue;
+    if (!(element.name in source)) continue;
+    if (element.type === "checkbox") element.checked = !!source[element.name];
+    else element.value = source[element.name] == null ? "" : source[element.name];
+  }
+}
+
+async function openEdit(cam) {
+  editingId = cam ? cam.id : null;
+  $("#editTitle").textContent = cam ? "Edit camera" : "Add camera";
+  fillForm(cam);
+  if (cam) {
+    try {
+      const secret = await api(`/api/cameras/${cam.id}/password`);
+      $("#f-pass").value = secret.password || "";
+    } catch { /* leave the field empty */ }
+  }
+  $("#editDialog").showModal();
+}
+
+function formPayload() {
+  const form = $("#editForm");
+  const payload = {};
+  for (const element of form.elements) {
+    if (!element.name) continue;
+    payload[element.name] = element.type === "checkbox" ? element.checked : element.value;
+  }
+  return payload;
+}
+
+$("#addBtn").addEventListener("click", () => openEdit(null));
+$("#cancelEdit").addEventListener("click", () => $("#editDialog").close());
+
+$("#editForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = formPayload();
+  const button = $("#saveEdit");
+  button.disabled = true;
+  try {
+    if (editingId) {
+      await api(`/api/cameras/${editingId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      toast("Camera updated");
+    } else {
+      await api("/api/cameras", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      toast("Camera created");
+    }
+    $("#editDialog").close();
+    await refresh();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ------------------------------------------------------------------------ logs
+
+async function loadLogs() {
+  if (!logCameraId) return;
+  try {
+    const res = await fetch(`/api/cameras/${logCameraId}/logs?tail=300`);
+    $("#logBody").textContent = await res.text();
+  } catch (err) {
+    $("#logBody").textContent = err.message;
+  }
+}
+
+$("#refreshLogs").addEventListener("click", loadLogs);
+$("#closeLogs").addEventListener("click", () => {
+  logCameraId = null;
+  $("#logDialog").close();
+});
+
+// --------------------------------------------------------------- card actions
+
+$("#list").addEventListener("click", async (event) => {
+  const copyTarget = event.target.closest("[data-copy]");
+  if (copyTarget) { copyText(copyTarget.dataset.copy); return; }
+
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const { action, id } = button.dataset;
+  const cam = cameras.find((c) => c.id === id);
+  if (!cam) return;
+
+  if (action === "edit") return openEdit(cam);
+  if (action === "logs") {
+    logCameraId = id;
+    $("#logTitle").textContent = `Logs — ${cam.name}`;
+    $("#logBody").textContent = "loading…";
+    $("#logDialog").showModal();
+    return loadLogs();
+  }
+  if (action === "delete") {
+    if (!confirm(`Delete "${cam.name}"? Its container will be removed.`)) return;
+    try {
+      await api(`/api/cameras/${id}`, { method: "DELETE" });
+      toast("Camera deleted");
+      await refresh();
+    } catch (err) { toast(err.message, true); }
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    await api(`/api/cameras/${id}/${action}`, { method: "POST" });
+    await refresh();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// -------------------------------------------------------------------- bootstrap
+
+refreshStatus();
+refresh();
+setInterval(refresh, 5000);
+setInterval(refreshStatus, 15000);
+</script>
+</body>
+</html>

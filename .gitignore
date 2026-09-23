@@ -1,0 +1,12 @@
+# Runtime state and camera configuration (contains credentials)
+data/*
+!data/.gitkeep
+state/*
+!state/.gitkeep
+
+# Local settings
+.env
+
+# Python
+__pycache__/
+*.pyc
