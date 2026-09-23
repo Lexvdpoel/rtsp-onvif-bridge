@@ -12,11 +12,11 @@ services:
       # macvlan network the virtual cameras are attached to.
       MACVLAN_NETWORK: ${MACVLAN_NETWORK:-camlan}
       MACVLAN_PARENT: ${MACVLAN_PARENT:-eth0}
-      # Optional: only used when the network has to be auto-created and you
-      # prefer Docker-managed IPAM over the DHCP-only "null" driver.
-      MACVLAN_SUBNET: ${MACVLAN_SUBNET:-}
+      # Addressing for the macvlan network. The default is a parking subnet
+      # that does not exist on your LAN; the cameras replace it over DHCP.
+      MACVLAN_SUBNET: ${MACVLAN_SUBNET:-100.127.255.0/24}
       MACVLAN_GATEWAY: ${MACVLAN_GATEWAY:-}
-      MACVLAN_IPAM: ${MACVLAN_IPAM:-null}
+      MACVLAN_IP_RANGE: ${MACVLAN_IP_RANGE:-}
       STATE_DIR: /state
       DATA_DIR: /data
     ports:

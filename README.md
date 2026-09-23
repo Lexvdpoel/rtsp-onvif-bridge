@@ -76,7 +76,6 @@ docker run -d \
   -e BRIDGE_IMAGE=rtsp-onvif-bridge:latest \
   -e MACVLAN_NETWORK=camlan \
   -e MACVLAN_PARENT=br0 \
-  -e MACVLAN_IPAM=null \
   -e STATE_DIR=/state \
   -e DATA_DIR=/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -200,6 +199,7 @@ Klik **Logs** op een camerakaart — de meeste antwoorden staan daar.
 | Adoptie faalt met een auth-fout | Test met **Require authentication** uit. Sommige NVR's sturen alleen HTTP Basic, andere alleen WS-UsernameToken — beide worden ondersteund, maar een typefout in het wachtwoord is de gebruikelijke oorzaak. |
 | Beeld blijft zwart, ONVIF werkt wel | De relay krijgt de bron niet binnen. Test de bron-URL rechtstreeks: `ffplay -rtsp_transport tcp "rtsp://…"`. Probeer transport UDP als TCP hapert. |
 | Snapshot geeft 503 | ffmpeg kreeg geen frame binnen 15 seconden — meestal dezelfde oorzaak als hierboven. |
+| `ipv4 pool is empty` bij het aanmaken van het netwerk | Het macvlan-netwerk werd zonder IPv4-pool aangemaakt. Zorg dat `MACVLAN_SUBNET` gevuld is (default `100.127.255.0/24`). De oude instelling `MACVLAN_IPAM=null` werkt niet: Docker's macvlan-driver eist een pool. |
 | `Image not found` bij toevoegen | `docker compose build` nog niet gedraaid, of `BRIDGE_IMAGE` wijkt af van de gebouwde tag. |
 
 Uitgebreide ONVIF-logging: zet `ONVIF_DEBUG=1` in de environment van de

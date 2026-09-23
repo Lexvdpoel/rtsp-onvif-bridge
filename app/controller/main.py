@@ -126,7 +126,7 @@ async def status():
         info["network"] = {
             "name": manager.network_name,
             "parent": manager.parent,
-            "ipam": manager.ipam_mode,
+            "subnet": manager.subnet,
         }
         try:
             info["network"].update(manager.ensure_network())

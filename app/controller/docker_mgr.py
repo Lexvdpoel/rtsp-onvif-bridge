@@ -19,6 +19,16 @@ from ..common import models
 LABEL_MANAGED = "rtsp-onvif-bridge.managed"
 LABEL_CAM_ID = "rtsp-onvif-bridge.camera-id"
 
+# Docker's macvlan driver refuses to create a network without an IPv4 pool
+# ("ipv4 pool is empty"), so the DHCP server cannot simply be left in charge by
+# using the null IPAM driver. Instead the network is given a parking subnet that
+# does not exist on the LAN: Docker hands each container a throwaway address
+# from it, which the camera flushes before asking the real DHCP server for its
+# address. Carrier-grade NAT space is used because it practically never clashes
+# with a home or office LAN, so the throwaway address cannot collide with a real
+# device during the second or two that it is configured.
+PARKING_SUBNET = "100.127.255.0/24"
+
 
 class DockerError(RuntimeError):
     pass
@@ -29,9 +39,10 @@ class DockerManager:
         self.image = os.environ.get("BRIDGE_IMAGE", "rtsp-onvif-bridge:latest")
         self.network_name = os.environ.get("MACVLAN_NETWORK", "camlan")
         self.parent = os.environ.get("MACVLAN_PARENT", "eth0")
-        self.subnet = os.environ.get("MACVLAN_SUBNET", "").strip()
+        self.subnet = os.environ.get("MACVLAN_SUBNET", "").strip() or PARKING_SUBNET
         self.gateway = os.environ.get("MACVLAN_GATEWAY", "").strip()
-        self.ipam_mode = os.environ.get("MACVLAN_IPAM", "null").strip().lower()
+        self.ip_range = os.environ.get("MACVLAN_IP_RANGE", "").strip()
+        self.ipam_mode = os.environ.get("MACVLAN_IPAM", "").strip().lower()
         self.state_dir = os.environ.get("STATE_DIR", "/state")
         try:
             self.client = docker.from_env()
@@ -61,6 +72,25 @@ class DockerManager:
                 return mount.get("Name") or mount.get("Source") or self.state_dir
         return self.state_dir
 
+    def ipam_config(self) -> IPAMConfig:
+        """Addressing for the macvlan network.
+
+        Always subnet-based: see PARKING_SUBNET for why the null IPAM driver is
+        not an option here.
+        """
+        if self.ipam_mode == "null":
+            print(
+                "[controller] MACVLAN_IPAM=null is ignored: Docker's macvlan "
+                f"driver requires an IPv4 pool. Using subnet {self.subnet}; "
+                "the cameras still get their real address over DHCP."
+            )
+        pool = IPAMPool(
+            subnet=self.subnet,
+            gateway=self.gateway or None,
+            iprange=self.ip_range or None,
+        )
+        return IPAMConfig(driver="default", pool_configs=[pool])
+
     def ensure_network(self) -> dict:
         """Create the macvlan network if it is missing; return a short summary."""
         try:
@@ -74,28 +104,19 @@ class DockerManager:
         except NotFound:
             pass
 
-        if self.ipam_mode == "null":
-            # No Docker-side addressing at all: the DHCP server is authoritative.
-            ipam = IPAMConfig(driver="null")
-        else:
-            if not self.subnet:
-                raise DockerError(
-                    "MACVLAN_IPAM=docker requires MACVLAN_SUBNET to be set."
-                )
-            pool = IPAMPool(subnet=self.subnet, gateway=self.gateway or None)
-            ipam = IPAMConfig(driver="default", pool_configs=[pool])
-
         try:
             self.client.networks.create(
                 name=self.network_name,
                 driver="macvlan",
                 options={"parent": self.parent},
-                ipam=ipam,
+                ipam=self.ipam_config(),
             )
         except APIError as exc:
             raise DockerError(
                 f"Could not create macvlan network '{self.network_name}' on "
-                f"parent '{self.parent}': {exc.explanation or exc}"
+                f"parent '{self.parent}': {exc.explanation or exc}. "
+                f"Check that MACVLAN_PARENT names a real interface on the "
+                f"Docker host (run 'ip -br link' there)."
             ) from exc
         return {
             "name": self.network_name,
