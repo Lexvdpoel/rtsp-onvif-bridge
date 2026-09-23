@@ -46,6 +46,39 @@ RTSP-bronnen ──────────┼─ onvif-cam-c3d4  MAC 02:1f:… 
 - De host-NIC moet op hetzelfde L2-segment zitten als je NVR. Werk je met VLANs,
   gebruik dan de VLAN-subinterface als parent, bijvoorbeeld `eth0.20`.
 
+## Unraid
+
+Unraid heeft geen `git` in de basisinstallatie, dus haal de tarball op via de
+web-terminal:
+
+```bash
+mkdir -p /mnt/user/appdata/rtsp-onvif-bridge
+cd /mnt/user/appdata/rtsp-onvif-bridge
+wget -qO- https://github.com/Lexvdpoel/rtsp-onvif-bridge/archive/refs/heads/main.tar.gz | tar xz --strip-components=1
+cp .env.example .env
+```
+
+Voor `docker compose` heb je de plugin **Docker Compose Manager** nodig uit
+Community Applications. Daarna:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+Twee Unraid-specifieke punten:
+
+- **`MACVLAN_PARENT`** is op Unraid meestal `br0` (of `eth0` als bridging uit
+  staat, of `br0.20` voor een VLAN). Controleer met `ip -br link`.
+- **Macvlan en kernel call traces.** Unraid heeft een bekende instabiliteit met
+  macvlan; de standaardaanbeveling is om Docker-netwerken op ipvlan te zetten.
+  Dat kan hier niet: bij ipvlan delen alle containers het MAC-adres van de host,
+  en dan krijgt elke virtuele camera geen eigen DHCP-lease meer — precies wat dit
+  project moet doen. Macvlan is dus vereist. De crashes hangen samen met bridging
+  op dezelfde interface; de gebruikelijke oplossing is de camera's op een
+  interface te zetten waarop geen bridge actief is, bijvoorbeeld een aparte NIC of
+  een VLAN-subinterface. Houd dit in de gaten bij de eerste dagen draaien.
+
 ## Installatie
 
 ```bash
