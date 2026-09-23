@@ -82,7 +82,7 @@ Twee Unraid-specifieke punten:
 ## Installatie
 
 ```bash
-git clone <deze map> rtsp-onvif-bridge
+git clone https://github.com/Lexvdpoel/rtsp-onvif-bridge.git
 cd rtsp-onvif-bridge
 cp .env.example .env
 ```
