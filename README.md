@@ -123,7 +123,8 @@ rm -f /boot/config/plugins/dockerMan/images/rtsp-onvif-bridge*
 rm -f /usr/local/emhttp/state/plugins/dynamix.docker.manager/images/rtsp-onvif-bridge*
 
 # 2. de template installeren
-cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml    /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
+mkdir -p /boot/config/plugins/dockerMan/templates-user
+cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
 ```
 
 Daarna het Docker-tabblad verversen met Ctrl+F5.
@@ -141,8 +142,8 @@ commandoregel, installeer dan de meegeleverde template. Poort 8080, de paden,
 het icoon en de WebUI-link staan er al in:
 
 ```bash
-cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml \
-   /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
+mkdir -p /boot/config/plugins/dockerMan/templates-user
+cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
 ```
 
 Daarna in Unraid: **Docker → Add Container → Template → rtsp-onvif-bridge**.
