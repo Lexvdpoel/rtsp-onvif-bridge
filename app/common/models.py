@@ -25,6 +25,13 @@ DEFAULTS = {
     "require_auth": True,
     "proxy": True,
     "rtsp_transport": "tcp",
+    # Codec handed to the NVR. "copy" relays whatever the source sends; h264 or
+    # h265 re-encode only when the source is not already that codec.
+    "output_codec": "copy",
+    "hwaccel": "none",
+    "encode_bitrate": 4096,
+    "encode_preset": "veryfast",
+    "audio": "copy",
     "manufacturer": "RTSP-ONVIF-Bridge",
     "model": "VirtualCam",
     "firmware": "1.0.0",
@@ -82,6 +89,7 @@ def new_camera(payload: dict | None = None) -> dict:
 
 
 _INT_FIELDS = {
+    "encode_bitrate",
     "onvif_port",
     "rtsp_port",
     "width",
@@ -130,6 +138,14 @@ def validate(cam: dict) -> list[str]:
         errors.append("RTSP port must be between 1 and 65535.")
     if cam.get("require_auth") and not cam.get("password"):
         errors.append("A password is required when authentication is enabled.")
+    if cam.get("output_codec") not in ("copy", "h264", "h265"):
+        errors.append("Output codec must be copy, h264 or h265.")
+    if cam.get("hwaccel") not in ("none", "vaapi", "qsv", "nvenc"):
+        errors.append("Hardware acceleration must be none, vaapi, qsv or nvenc.")
+    if cam.get("audio") not in ("copy", "none"):
+        errors.append("Audio must be copy or none.")
+    if not 64 <= int(cam.get("encode_bitrate", 4096)) <= 100000:
+        errors.append("Encoder bitrate must be between 64 and 100000 kbps.")
     return errors
 
 
@@ -157,6 +173,11 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "REQUIRE_AUTH": "1" if cam["require_auth"] else "0",
         "PROXY": "1" if cam["proxy"] else "0",
         "RTSP_TRANSPORT": cam.get("rtsp_transport") or "tcp",
+        "OUTPUT_CODEC": cam.get("output_codec") or "copy",
+        "HWACCEL": cam.get("hwaccel") or "none",
+        "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),
+        "ENCODE_PRESET": cam.get("encode_preset") or "veryfast",
+        "AUDIO": cam.get("audio") or "copy",
         "SNAPSHOT": "1" if cam["snapshot_enabled"] else "0",
         "AUTODETECT": "1" if cam.get("autodetect", True) else "0",
         "VIDEO_WIDTH": str(cam["width"]),

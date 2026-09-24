@@ -333,6 +333,60 @@
       </fieldset>
 
       <fieldset>
+        <legend>Output codec</legend>
+        <div class="form-grid">
+          <div>
+            <label for="f-output-codec">Codec handed to the NVR</label>
+            <select id="f-output-codec" name="output_codec">
+              <option value="copy">Copy — whatever the source sends</option>
+              <option value="h264">H.264</option>
+              <option value="h265">H.265 / HEVC</option>
+            </select>
+          </div>
+          <div>
+            <label for="f-hwaccel">Encoder</label>
+            <select id="f-hwaccel" name="hwaccel">
+              <option value="none">Software (libx264 / libx265)</option>
+              <option value="vaapi">VA-API — Intel or AMD iGPU</option>
+              <option value="qsv">Intel Quick Sync</option>
+              <option value="nvenc">NVIDIA NVENC</option>
+            </select>
+          </div>
+          <div>
+            <label for="f-encode-bitrate">Encoder bitrate (kbps)</label>
+            <input type="number" id="f-encode-bitrate" name="encode_bitrate"
+                   value="4096" min="64" max="100000">
+          </div>
+          <div>
+            <label for="f-encode-preset">Encoder preset</label>
+            <select id="f-encode-preset" name="encode_preset">
+              <option value="ultrafast">ultrafast — lowest CPU</option>
+              <option value="superfast">superfast</option>
+              <option value="veryfast">veryfast</option>
+              <option value="faster">faster</option>
+              <option value="medium">medium — best quality per bit</option>
+            </select>
+          </div>
+          <div>
+            <label for="f-audio">Audio while re-encoding</label>
+            <select id="f-audio" name="audio">
+              <option value="copy">Copy through</option>
+              <option value="none">Drop</option>
+            </select>
+          </div>
+          <div class="wide hint">
+            Re-encoding only happens when the source is not already the codec you picked, so
+            choosing H.264 for an H.264 camera still costs nothing. A real transcode is expensive:
+            software H.265 of a 4 MP stream will occupy several CPU cores per camera. Pick a
+            hardware encoder if your host has one — VA-API and Quick Sync need
+            <code>/dev/dri</code> on the host, NVENC needs the NVIDIA container runtime; the
+            device is passed in automatically. If the stream stays black after switching, drop
+            the audio: not every camera's audio can be carried into RTSP.
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
         <legend>Advertised video properties</legend>
         <div class="form-grid">
           <div class="wide check" style="margin-top:0">
@@ -571,6 +625,13 @@ function detectedText(cam) {
   return parts.filter(Boolean).join(" · ");
 }
 
+function outputText(cam) {
+  const plan = ((cam.runtime || {}).transcode || {}).plans;
+  if (plan && plan.main) return plan.main;
+  if (cam.output_codec === "copy") return "relayed as-is";
+  return `${String(cam.output_codec || "").toUpperCase()} (pending)`;
+}
+
 function rateModeText(cam) {
   const stats = (cam.runtime || {}).stats || {};
   if (!stats.rate_mode) return "measuring…";
@@ -580,6 +641,9 @@ function rateModeText(cam) {
 
 function flowBlock(cam) {
   const stats = (cam.runtime || {}).stats || {};
+  // With a transcode the relay receives ffmpeg's output, so "in" is the encoded
+  // rate rather than what the source camera sends.
+  const transcoding = ((cam.runtime || {}).transcode || {}).active;
   if (!cam.proxy) {
     return '<div class="flow"><div class="spark-empty">'
       + "Relay is off, so throughput cannot be measured here.</div></div>";
@@ -607,6 +671,8 @@ function flowBlock(cam) {
           ${stats.readers} reader${stats.readers === 1 ? "" : "s"} ·
           ${formatBytes(stats.bytes_in)} in / ${formatBytes(stats.bytes_out)} out
         </div>
+        ${transcoding ? '<div class="row" style="color:var(--muted);font-size:12px;">'
+          + "In is measured after encoding, not at the source.</div>" : ""}
       </div>
       <div class="spark-wrap" data-cam="${cam.id}">
         ${sparkline(entry.in, entry.out, cam.id)}
@@ -646,6 +712,7 @@ function render() {
           ${field("RTSP stream", runtime.rtsp_url, true)}
           ${field("Source", cam.source_url, true)}
           ${field("Detected stream", detectedText(cam))}
+          ${field("Output", outputText(cam))}
           ${field("Rate control", rateModeText(cam))}
         </div>
         ${flowBlock(cam)}

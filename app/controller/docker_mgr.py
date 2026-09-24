@@ -12,7 +12,7 @@ import socket
 
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
-from docker.types import IPAMConfig, IPAMPool
+from docker.types import DeviceRequest, IPAMConfig, IPAMPool
 
 from ..common import models
 
@@ -159,6 +159,7 @@ class DockerManager:
             ) from exc
 
         source = self._state_mount_source()
+        extra = self._hwaccel_access(cam)
         try:
             container = self.client.containers.create(
                 image=self.image,
@@ -172,6 +173,7 @@ class DockerManager:
                 volumes={source: {"bind": self.state_dir, "mode": "rw"}},
                 labels={LABEL_MANAGED: "true", LABEL_CAM_ID: cam["id"]},
                 detach=True,
+                **extra,
             )
         except APIError as exc:
             raise DockerError(
@@ -179,6 +181,20 @@ class DockerManager:
                 f"{exc.explanation or exc}"
             ) from exc
         return container
+
+    @staticmethod
+    def _hwaccel_access(cam: dict) -> dict:
+        """Give the container the GPU it needs, and only when it needs one."""
+        hwaccel = cam.get("hwaccel", "none")
+        if cam.get("output_codec") in (None, "", "copy") or hwaccel == "none":
+            return {}
+        if hwaccel in ("vaapi", "qsv"):
+            # Intel and AMD render nodes live here.
+            return {"devices": ["/dev/dri:/dev/dri:rwm"]}
+        if hwaccel == "nvenc":
+            # Needs the NVIDIA container runtime installed on the host.
+            return {"device_requests": [DeviceRequest(count=-1, capabilities=[["gpu"]])]}
+        return {}
 
     def start(self, cam: dict):
         container = self._container(cam)

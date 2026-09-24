@@ -2,9 +2,11 @@
 
 Boot order:
   1. take a DHCP lease on the macvlan interface (own MAC -> own IP)
-  2. start the RTSP relay so the stream lives on this camera's IP
-  3. serve ONVIF over HTTP and answer WS-Discovery probes
-  4. keep a small status file the web UI reads
+  2. serve ONVIF over HTTP and answer WS-Discovery probes, so the device is
+     reachable straight away
+  3. probe the source, which decides whether a transcode is needed
+  4. start the RTSP relay, pulling the source or re-encoding it
+  5. keep a small status file the web UI reads
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import mediamtx, net, probe as probe_mod
+from . import mediamtx, net, probe as probe_mod, transcode
 from .onvif_server import serve as serve_onvif
 from .stats import StatsCollector
 from .wsdiscovery import DiscoveryResponder
@@ -70,7 +72,13 @@ class Config:
     height_sub: int
     fps_sub: int
     bitrate_sub: int
-    # Replaced by the probed codec when autodetect is on.
+    output_codec: str
+    hwaccel: str
+    encode_bitrate: int
+    encode_preset: str
+    audio: str
+    # Replaced by the probed codec when autodetect is on, or by the target
+    # codec when the stream is re-encoded.
     encoding: str = "H264"
 
     @classmethod
@@ -104,6 +112,11 @@ class Config:
             height_sub=_env_int("VIDEO_HEIGHT_SUB", 360),
             fps_sub=_env_int("VIDEO_FPS_SUB", 15),
             bitrate_sub=_env_int("VIDEO_BITRATE_SUB", 512),
+            output_codec=_env("OUTPUT_CODEC", "copy"),
+            hwaccel=_env("HWACCEL", "none"),
+            encode_bitrate=_env_int("ENCODE_BITRATE", 4096),
+            encode_preset=_env("ENCODE_PRESET", "veryfast"),
+            audio=_env("AUDIO", "copy"),
         )
 
 
@@ -119,6 +132,7 @@ class State:
         self.message = ""
         self.detected: dict = {}
         self.stats: dict = {}
+        self.transcode: dict = {}
 
     def refresh_from_interface(self):
         self.ip = net.read_ip()
@@ -162,6 +176,7 @@ def _status_payload(cfg: Config, state: State) -> dict:
         "snapshot_url": f"http://{state.ip}:{cfg.onvif_port}/snapshot" if state.ip else "",
         "detected": state.detected,
         "stats": state.stats,
+        "transcode": state.transcode,
         "advertised": {
             "encoding": cfg.encoding,
             "width": cfg.width,
@@ -217,6 +232,54 @@ def _apply_probe(cfg: Config, state: State, sub: bool = False):
     cfg.encoding = probe_mod.onvif_encoding(result["codec"])
 
 
+def _relay_paths(cfg: Config, state: State) -> dict[str, dict]:
+    """Decide per stream whether to relay it as-is or re-encode it.
+
+    Also settles what ONVIF advertises: after a transcode the NVR receives the
+    target codec, not the source's.
+    """
+    paths: dict[str, dict] = {}
+    plans: dict[str, str] = {}
+
+    for key, url, sub in (("main", cfg.source_url, False), ("sub", cfg.source_url_sub, True)):
+        if not url:
+            continue
+        source_codec = (state.detected.get(key) or {}).get("codec", "")
+        if transcode.needs_transcode(source_codec, cfg.output_codec):
+            args = transcode.build_args(
+                source_url=url,
+                publish_url=f"rtsp://127.0.0.1:{cfg.rtsp_port}/{key}",
+                output_codec=cfg.output_codec,
+                hwaccel=cfg.hwaccel,
+                bitrate_kbps=cfg.encode_bitrate if not sub else cfg.bitrate_sub,
+                preset=cfg.encode_preset,
+                transport=cfg.rtsp_transport,
+                audio=cfg.audio,
+            )
+            script_path = mediamtx.write_transcode_script(key, args, transcode.script)
+            paths[key] = {"script": script_path}
+        else:
+            paths[key] = {"source": url}
+        plans[key] = transcode.describe(source_codec, cfg.output_codec, cfg.hwaccel)
+        print(f"[relay] {key}: {plans[key]}")
+
+    transcoding = any("script" in spec for spec in paths.values())
+    if cfg.output_codec in ("h264", "h265"):
+        # What leaves the bridge is the requested codec, whether it was
+        # re-encoded or already matched.
+        cfg.encoding = "H264" if cfg.output_codec == "h264" else "H265"
+        if transcoding:
+            cfg.bitrate = cfg.encode_bitrate
+
+    state.transcode = {
+        "active": transcoding,
+        "output_codec": cfg.output_codec,
+        "hwaccel": cfg.hwaccel,
+        "plans": plans,
+    }
+    return paths
+
+
 def main() -> int:
     cfg = Config.from_env()
     state = State()
@@ -253,41 +316,39 @@ def main() -> int:
     state.refresh_from_interface()
     print(f"[camera] address {state.ip}/{state.prefix} via {state.gateway or 'no gateway'}")
 
-    # 2. RTSP relay -------------------------------------------------------
+    # 2. ONVIF + discovery ------------------------------------------------
+    # Brought up before the relay so the device answers straight away; the
+    # stream URI it hands out works as soon as the relay follows.
+    httpd = serve_onvif(cfg, state)
+    discovery = DiscoveryResponder(cfg, state)
+    discovery.start()
+    print(f"[camera] ONVIF ready at http://{state.ip}:{cfg.onvif_port}/onvif/device_service")
+
+    # 3. detect the source ------------------------------------------------
+    # Whether a transcode is needed depends on the source codec, so this has to
+    # finish before the relay is configured.
+    state.status = "probing"
+    state_file.write(_status_payload(cfg, state))
+    _apply_probe(cfg, state)
+    _apply_probe(cfg, state, sub=True)
+
+    # 4. RTSP relay -------------------------------------------------------
     relay_proc = None
     if cfg.proxy:
-        paths = {"main": cfg.source_url}
-        if cfg.source_url_sub:
-            paths["sub"] = cfg.source_url_sub
+        paths = _relay_paths(cfg, state)
         config_path = mediamtx.write_config(paths, cfg.rtsp_port, cfg.rtsp_transport)
         relay_proc = mediamtx.start(config_path)
         if relay_proc is None:
             cfg.proxy = False  # fall back to handing out the upstream URL
 
-    # 3. throughput + stream detection ------------------------------------
     collector = None
     if cfg.proxy:
         collector = StatsCollector()
         collector.start()
 
-    # Probing opens a short connection to the real camera, so keep it off the
-    # startup path: ONVIF must answer immediately, with the configured values
-    # until the probe replaces them.
-    threading.Thread(
-        target=lambda: (_apply_probe(cfg, state), _apply_probe(cfg, state, sub=True)),
-        name="probe",
-        daemon=True,
-    ).start()
-
-    # 4. ONVIF + discovery ------------------------------------------------
-    httpd = serve_onvif(cfg, state)
-    discovery = DiscoveryResponder(cfg, state)
-    discovery.start()
-
     state.status = "running"
     state.message = ""
     state_file.write(_status_payload(cfg, state))
-    print(f"[camera] ONVIF ready at http://{state.ip}:{cfg.onvif_port}/onvif/device_service")
 
     # 5. supervise --------------------------------------------------------
     stopping = threading.Event()

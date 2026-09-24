@@ -15,6 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
+# VA-API drivers, so hardware encoding can use an Intel or AMD render node.
+# Optional: the image stays fully usable with software encoding if the mirror
+# does not carry them, so a failure here must not fail the build.
+RUN apt-get update && \
+    (apt-get install -y --no-install-recommends \
+        libva2 libva-drm2 vainfo intel-media-va-driver mesa-va-drivers \
+     || echo "VA-API drivers unavailable; hardware encoding will not work") \
+    && rm -rf /var/lib/apt/lists/*
+
 # MediaMTX is used as the per-camera RTSP relay so the stream appears to
 # originate from the virtual camera's own IP address.
 RUN set -eux; \
