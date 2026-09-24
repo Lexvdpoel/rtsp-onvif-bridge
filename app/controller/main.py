@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from ..common import models
 from . import backup as backup_mod
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI):
         # Detecting starts containers, so keep it off the startup path; cameras
         # created before it finishes fall back to software encoding.
         threading.Thread(target=_detect_hardware, name="hwdetect", daemon=True).start()
-        _autostart()
+        threading.Thread(target=_autostart, name="autostart", daemon=True).start()
     yield
 
 
@@ -120,7 +121,7 @@ def _set_session(response: JSONResponse) -> JSONResponse:
 
 
 @app.get("/api/auth/state")
-async def auth_state(request: Request):
+def auth_state(request: Request):
     return {
         "configured": auth.configured,
         "authenticated": auth.valid_token(request.cookies.get(COOKIE_NAME, "")),
@@ -146,7 +147,7 @@ async def auth_setup(request: Request):
             {"detail": "The password needs at least 8 characters."}, status_code=400
         )
 
-    auth.set_credentials(username, password)
+    await run_in_threadpool(auth.set_credentials, username, password)
     return _set_session(JSONResponse({"configured": True, "username": username}))
 
 
@@ -159,7 +160,7 @@ async def auth_login(request: Request):
     payload = await request.json()
     username = str(payload.get("username", "")).strip()
     password = str(payload.get("password", ""))
-    if not auth.verify(username, password):
+    if not await run_in_threadpool(auth.verify, username, password):
         return JSONResponse(
             {"detail": "Wrong username or password."}, status_code=401
         )
@@ -167,7 +168,7 @@ async def auth_login(request: Request):
 
 
 @app.post("/api/auth/logout")
-async def auth_logout():
+def auth_logout():
     response = JSONResponse({"authenticated": False})
     response.delete_cookie(COOKIE_NAME, path="/")
     return response
@@ -178,14 +179,14 @@ async def auth_password(request: Request):
     payload = await request.json()
     current = str(payload.get("current", ""))
     new = str(payload.get("new", ""))
-    if not auth.verify(auth.username(), current):
+    if not await run_in_threadpool(auth.verify, auth.username(), current):
         return JSONResponse({"detail": "The current password is wrong."}, status_code=403)
     if len(new) < 8:
         return JSONResponse(
             {"detail": "The new password needs at least 8 characters."}, status_code=400
         )
     # This invalidates every existing session, including this one.
-    auth.set_credentials(auth.username(), new)
+    await run_in_threadpool(auth.set_credentials, auth.username(), new)
     return _set_session(JSONResponse({"changed": True}))
 
 
@@ -242,13 +243,13 @@ def _get_or_404(cam_id: str) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+def index():
     with open(os.path.join(TEMPLATE_DIR, "index.html"), encoding="utf-8") as fh:
         return HTMLResponse(fh.read())
 
 
 @app.get("/api/status")
-async def status():
+def status():
     info = {
         "docker": manager is not None and manager.ping(),
         "error": startup_error,
@@ -269,7 +270,7 @@ async def status():
 
 
 @app.get("/api/cameras")
-async def list_cameras():
+def list_cameras():
     return [_decorate(cam) for cam in store.list()]
 
 
@@ -281,7 +282,12 @@ async def create_camera(request: Request):
     errors = models.validate(draft)
     if errors:
         return JSONResponse({"detail": " ".join(errors)}, status_code=400)
+    # Creating a container talks to the Docker daemon and can take seconds, so
+    # it runs off the event loop; otherwise every other request waits on it.
+    return await run_in_threadpool(_create_camera_sync, payload)
 
+
+def _create_camera_sync(payload: dict):
     cam = store.add(payload)
     if cam.get("enabled"):
         try:
@@ -304,7 +310,10 @@ async def update_camera(cam_id: str, request: Request):
     errors = models.validate(draft)
     if errors:
         return JSONResponse({"detail": " ".join(errors)}, status_code=400)
+    return await run_in_threadpool(_update_camera_sync, cam_id, payload)
 
+
+def _update_camera_sync(cam_id: str, payload: dict):
     updated = store.update(cam_id, payload)
     mgr = _require_manager()
     try:
@@ -321,7 +330,7 @@ async def update_camera(cam_id: str, request: Request):
 
 
 @app.delete("/api/cameras/{cam_id}")
-async def delete_camera(cam_id: str):
+def delete_camera(cam_id: str):
     cam = _get_or_404(cam_id)
     if manager is not None:
         try:
@@ -333,7 +342,7 @@ async def delete_camera(cam_id: str):
 
 
 @app.post("/api/cameras/{cam_id}/{action}")
-async def camera_action(cam_id: str, action: str):
+def camera_action(cam_id: str, action: str):
     cam = _get_or_404(cam_id)
     mgr = _require_manager()
     try:
@@ -353,20 +362,20 @@ async def camera_action(cam_id: str, action: str):
 
 
 @app.get("/api/cameras/{cam_id}/logs", response_class=PlainTextResponse)
-async def camera_logs(cam_id: str, tail: int = 200):
+def camera_logs(cam_id: str, tail: int = 200):
     cam = _get_or_404(cam_id)
     return _require_manager().logs(cam, tail=tail)
 
 
 @app.get("/api/cameras/{cam_id}/password")
-async def camera_password(cam_id: str):
+def camera_password(cam_id: str):
     """Returned only on explicit request, so the list view stays free of secrets."""
     cam = _get_or_404(cam_id)
     return {"password": cam.get("password", "")}
 
 
 @app.get("/api/hwaccel")
-async def hwaccel_state():
+def hwaccel_state():
     if detector is None:
         return {"detected_at": 0, "summary": "Docker unavailable", "available": {}}
     report = dict(detector.cached())
@@ -375,7 +384,7 @@ async def hwaccel_state():
 
 
 @app.post("/api/hwaccel/detect")
-async def hwaccel_detect():
+def hwaccel_detect():
     """Re-run the probe; the host's hardware or the image may have changed."""
     if detector is None:
         raise HTTPException(status_code=503, detail="Docker is not available.")
@@ -388,7 +397,7 @@ async def hwaccel_detect():
 
 
 @app.get("/api/backup")
-async def download_backup():
+def download_backup():
     """Full camera configuration, including credentials, as a download."""
     payload = backup_mod.export(store.list())
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
@@ -406,7 +415,11 @@ async def restore_backup(request: Request):
     body = await request.json()
     document = body.get("backup", body)
     replace = bool(body.get("replace", True)) if isinstance(body, dict) else True
+    # A restore recreates every camera container, so it must not hold the loop.
+    return await run_in_threadpool(_restore_sync, document, replace)
 
+
+def _restore_sync(document, replace: bool):
     try:
         cameras = backup_mod.parse(document)
     except backup_mod.RestoreError as exc:
@@ -455,13 +468,13 @@ async def restore_backup(request: Request):
 
 
 @app.get("/api/orphans")
-async def list_orphans():
+def list_orphans():
     mgr = _require_manager()
     known = {cam["id"] for cam in store.list()}
     return {"orphans": mgr.orphans(known)}
 
 
 @app.delete("/api/orphans/{name}")
-async def remove_orphan(name: str):
+def remove_orphan(name: str):
     _require_manager().remove_orphan(name)
     return {"removed": name}

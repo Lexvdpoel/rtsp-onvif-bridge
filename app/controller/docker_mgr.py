@@ -115,7 +115,11 @@ class DockerManager:
         # Set by the controller once it has a hardware report to consult.
         self.detector = None
         try:
-            self.client = docker.from_env()
+            # Without a timeout a wedged daemon call never returns, and the
+            # request waiting on it never finishes either.
+            self.client = docker.from_env(
+                timeout=int(os.environ.get("DOCKER_TIMEOUT", "60"))
+            )
         except Exception as exc:  # noqa: BLE001 - surfaced in the UI
             raise DockerError(f"Cannot reach the Docker daemon: {exc}") from exc
 
