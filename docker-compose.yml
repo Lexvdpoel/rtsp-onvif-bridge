@@ -31,3 +31,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
       - ./state:/state
+      # Unraid only: lets the controller give each camera container an icon by
+      # writing a dockerMan template for it. Harmless to leave out elsewhere.
+      # - /boot/config/plugins/dockerMan/templates-user:/unraid-templates

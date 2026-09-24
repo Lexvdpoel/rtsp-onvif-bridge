@@ -90,6 +90,7 @@ docker run -d \
   -l net.unraid.docker.icon=https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png \
   -l "net.unraid.docker.webui=http://[IP]:[PORT:8080]/" \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /boot/config/plugins/dockerMan/templates-user:/unraid-templates \
   -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data \
   -v /mnt/user/appdata/rtsp-onvif-bridge/state:/state \
   rtsp-onvif-bridge:latest
@@ -122,18 +123,39 @@ staan. Leeg hem en installeer de template:
 rm -f /boot/config/plugins/dockerMan/images/rtsp-onvif-bridge*
 rm -f /usr/local/emhttp/state/plugins/dynamix.docker.manager/images/rtsp-onvif-bridge*
 
-# 2. de template installeren
+# 2. de template installeren, vernoemd naar je container
 mkdir -p /boot/config/plugins/dockerMan/templates-user
-cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
+sed 's|<Name>rtsp-onvif-bridge</Name>|<Name>onvif-bridge-controller</Name>|' /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml > /boot/config/plugins/dockerMan/templates-user/my-onvif-bridge-controller.xml
 ```
 
 Daarna het Docker-tabblad verversen met Ctrl+F5.
 
-De template is hier de betrouwbare route: dockerMan zoekt het icoon op aan de
-hand van de **image**-naam (`rtsp-onvif-bridge:latest`), niet aan de hand van de
-containernaam. Eén template dekt daarmee de controller én alle camera-containers,
-want die draaien op hetzelfde image. Je hoeft de containers niet via de template
-aan te maken; het `docker run`-commando hierboven blijft prima.
+**De bestandsnaam moet overeenkomen met de containernaam.** Unraid koppelt een
+template aan een container via `my-<containernaam>.xml`; het label op de
+container alleen is niet genoeg. Draait je controller onder een andere naam, pas
+dan zowel de bestandsnaam als de `<Name>` in de template aan. Je hoeft de
+container niet via de template aan te maken — het `docker run`-commando hierboven
+blijft prima, de template levert alleen het icoon en de WebUI-link.
+
+### Iconen voor de camera-containers
+
+Omdat Unraid per container een template wil, kan de bridge die zelf schrijven.
+Mount daarvoor de templates-map in de controller:
+
+```bash
+  -v /boot/config/plugins/dockerMan/templates-user:/unraid-templates \
+```
+
+Elke camera die de controller aanmaakt krijgt dan een eigen template met een
+**rood** camera-icoon, zodat je ze in het Docker-tabblad meteen onderscheidt van
+de blauwe controller. Verwijder je een camera, dan gaat de template mee.
+
+Die templates bestaan alleen voor het icoon. Bewerk ze niet via **Edit** in
+Unraid: een camera heeft een macvlan-interface en een vast MAC-adres nodig die
+het formulier van Unraid niet kan uitdrukken, en Apply zou de container zonder
+die instellingen opnieuw aanmaken. Beheer de camera's via de web-UI op poort
+8080. Laat je de mount weg, dan werkt alles verder gewoon; de camera's houden
+dan het standaard vraagteken.
 
 ### Met de Unraid-template
 

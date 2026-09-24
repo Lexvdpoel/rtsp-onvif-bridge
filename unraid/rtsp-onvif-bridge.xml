@@ -49,6 +49,10 @@
           Description="Required: the controller creates and supervises one container per camera."
           Type="Path" Display="advanced" Required="true" Mask="false">/var/run/docker.sock</Config>
 
+  <Config Name="Unraid templates" Target="/unraid-templates" Default="/boot/config/plugins/dockerMan/templates-user" Mode="rw"
+          Description="Lets the bridge give each camera container an icon, by writing a template for it here. Unraid resolves a container icon through its template, not through the container label."
+          Type="Path" Display="advanced" Required="false" Mask="false">/boot/config/plugins/dockerMan/templates-user</Config>
+
   <Config Name="LAN interface (MACVLAN_PARENT)" Target="MACVLAN_PARENT" Default="br0"
           Description="Host interface the virtual cameras hang off. Usually br0 on Unraid; check with: ip -br link"
           Type="Variable" Display="always" Required="true" Mask="false">br0</Config>

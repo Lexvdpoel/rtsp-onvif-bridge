@@ -31,7 +31,51 @@ DEFAULT_UNRAID_ICON = (
     "https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge"
     "/main/unraid/icon.png"
 )
+DEFAULT_UNRAID_CAMERA_ICON = (
+    "https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge"
+    "/main/unraid/icon-camera.png"
+)
 UNRAID_ICON = os.environ.get("UNRAID_ICON", "").strip() or DEFAULT_UNRAID_ICON
+UNRAID_CAMERA_ICON = (
+    os.environ.get("UNRAID_CAMERA_ICON", "").strip() or DEFAULT_UNRAID_CAMERA_ICON
+)
+
+# Unraid resolves a container's icon through a dockerMan template named after
+# the container, not through the label, so a camera only gets an icon if a
+# template exists for it. Mount Unraid's templates-user directory here and the
+# controller writes one per camera, and removes it again with the camera.
+UNRAID_TEMPLATES_DIR = os.environ.get("UNRAID_TEMPLATES_DIR", "/unraid-templates")
+
+CAMERA_TEMPLATE = """<?xml version="1.0"?>
+<Container version="2">
+  <Name>{name}</Name>
+  <Repository>{image}</Repository>
+  <Registry/>
+  <Network>none</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Lexvdpoel/rtsp-onvif-bridge/issues</Support>
+  <Project>https://github.com/Lexvdpoel/rtsp-onvif-bridge</Project>
+  <Overview>
+    Virtual ONVIF camera "{label}", created and managed by the RTSP to ONVIF
+    bridge. This template exists only so Unraid has an icon for it.
+
+    Do not edit or apply it here: this container needs a macvlan interface and a
+    fixed MAC address that Unraid's form cannot express, and applying would
+    recreate it without them. Manage the camera from the bridge's own web
+    interface instead.
+  </Overview>
+  <Category>HomeAutomation:</Category>
+  <Icon>{icon}</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+</Container>
+"""
 
 # Docker's macvlan driver refuses to create a network without an IPv4 pool
 # ("ipv4 pool is empty"), so the DHCP server cannot simply be left in charge by
@@ -42,6 +86,16 @@ UNRAID_ICON = os.environ.get("UNRAID_ICON", "").strip() or DEFAULT_UNRAID_ICON
 # with a home or office LAN, so the throwaway address cannot collide with a real
 # device during the second or two that it is configured.
 PARKING_SUBNET = "100.127.255.0/24"
+
+
+def _xml_escape(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 class DockerError(RuntimeError):
@@ -195,7 +249,7 @@ class DockerManager:
                 labels={
                     LABEL_MANAGED: "true",
                     LABEL_CAM_ID: cam["id"],
-                    "net.unraid.docker.icon": UNRAID_ICON,
+                    "net.unraid.docker.icon": UNRAID_CAMERA_ICON,
                 },
                 detach=True,
                 **extra,
@@ -205,7 +259,41 @@ class DockerManager:
                 f"Could not create container for '{cam['name']}': "
                 f"{exc.explanation or exc}"
             ) from exc
+        self.write_unraid_template(cam)
         return container
+
+    # ------------------------------------------------------- Unraid templates
+
+    @staticmethod
+    def _template_path(cam: dict) -> str:
+        return os.path.join(
+            UNRAID_TEMPLATES_DIR, f"my-{models.container_name(cam)}.xml"
+        )
+
+    def write_unraid_template(self, cam: dict):
+        """Give Unraid an icon for this camera, if its template dir is mounted."""
+        if not os.path.isdir(UNRAID_TEMPLATES_DIR):
+            return
+        xml = CAMERA_TEMPLATE.format(
+            name=models.container_name(cam),
+            image=_xml_escape(self.image),
+            label=_xml_escape(cam.get("name", "camera")),
+            icon=_xml_escape(UNRAID_CAMERA_ICON),
+        )
+        path = self._template_path(cam)
+        try:
+            tmp = f"{path}.tmp"
+            with open(tmp, "w") as fh:
+                fh.write(xml)
+            os.replace(tmp, path)
+        except OSError as exc:
+            print(f"[unraid] could not write {path}: {exc}")
+
+    def remove_unraid_template(self, cam: dict):
+        try:
+            os.remove(self._template_path(cam))
+        except OSError:
+            pass
 
     def resolved_hwaccel(self, cam: dict) -> str:
         """The concrete encoder this camera will use."""
@@ -269,6 +357,7 @@ class DockerManager:
                 f"{exc.explanation or exc}"
             ) from exc
         self._clear_state_file(cam)
+        self.remove_unraid_template(cam)
 
     def logs(self, cam: dict, tail: int = 200) -> str:
         container = self._container(cam)
