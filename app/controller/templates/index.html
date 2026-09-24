@@ -545,14 +545,6 @@ function formatBits(bps) {
   return n.toFixed(0) + " b/s";
 }
 
-function formatBytes(bytes) {
-  const n = Number(bytes) || 0;
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0, v = n;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return v.toFixed(i === 0 ? 0 : 1) + " " + units[i];
-}
-
 // ------------------------------------------------------------- sparkline
 
 // Two series on one shared scale — both are bits per second, so a single axis
@@ -681,8 +673,7 @@ function flowBlock(cam) {
           <span class="val">${formatBits(stats.out_bps)}</span>
         </div>
         <div class="row" style="color:var(--muted);font-size:12px;">
-          ${stats.readers} reader${stats.readers === 1 ? "" : "s"} ·
-          ${formatBytes(stats.bytes_in)} in / ${formatBytes(stats.bytes_out)} out
+          ${stats.readers} reader${stats.readers === 1 ? "" : "s"}
         </div>
         ${transcoding ? '<div class="row" style="color:var(--muted);font-size:12px;">'
           + "In is measured after encoding, not at the source.</div>" : ""}
