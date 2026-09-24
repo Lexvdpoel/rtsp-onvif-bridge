@@ -103,6 +103,27 @@ vraagteken zonder link. De camera-containers krijgen hetzelfde icoon; die hebben
 bewust geen WebUI-link, omdat Unraids `[IP]`-placeholder naar de host wijst
 terwijl een camera op zijn eigen DHCP-adres luistert.
 
+Verschijnt het icoon niet, controleer dan eerst of de labels er werkelijk op
+staan:
+
+```bash
+docker inspect onvif-bridge-controller --format '{{json .Config.Labels}}'
+```
+
+Zie je geen `net.unraid.docker.*` terug, dan is de container met een oud commando
+aangemaakt. Staan ze er wel, dan kon Unraid het icoon niet ophalen; wijs het dan
+naar het bestand op je server in plaats van naar een URL:
+
+```bash
+-l net.unraid.docker.icon=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png
+```
+
+Dat bestand staat er al na het uitpakken. Voor de camera-containers doe je
+hetzelfde met `-e UNRAID_ICON=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png`
+op de controller; die geeft het label door aan elke camera die hij aanmaakt.
+Unraid cachet iconen, dus geef het na een wijziging een paar seconden en ververs
+de pagina met Ctrl+F5.
+
 ### Met de Unraid-template
 
 Wil je de container via **Add Container** beheren in plaats van via de
