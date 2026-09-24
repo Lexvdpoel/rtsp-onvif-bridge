@@ -87,7 +87,8 @@ docker run -d \
   -e MACVLAN_PARENT=br0 \
   -e STATE_DIR=/state \
   -e DATA_DIR=/data \
-  -l net.unraid.docker.icon=https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png \
+  -e UNRAID_ICON=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png \
+  -l net.unraid.docker.icon=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png \
   -l "net.unraid.docker.webui=http://[IP]:[PORT:8080]/" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data \
@@ -103,26 +104,24 @@ vraagteken zonder link. De camera-containers krijgen hetzelfde icoon; die hebben
 bewust geen WebUI-link, omdat Unraids `[IP]`-placeholder naar de host wijst
 terwijl een camera op zijn eigen DHCP-adres luistert.
 
-Verschijnt het icoon niet, controleer dan eerst of de labels er werkelijk op
-staan:
+Het icoon wijst naar het bestand dat bij het uitpakken al op je server is gezet.
+Dat is betrouwbaarder dan een URL: die moet Unraid zelf ophalen, en mislukt dat,
+dan krijg je het vraagteken terug zonder melding. Draai je dit niet op Unraid of
+staat je appdata elders, gebruik dan de URL-variant:
+`https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png`.
+
+De `-e UNRAID_ICON=` geeft hetzelfde pad door aan de camera-containers.
+
+Verschijnt het icoon niet, controleer dan of de labels er werkelijk op staan:
 
 ```bash
 docker inspect onvif-bridge-controller --format '{{json .Config.Labels}}'
 ```
 
 Zie je geen `net.unraid.docker.*` terug, dan is de container met een oud commando
-aangemaakt. Staan ze er wel, dan kon Unraid het icoon niet ophalen; wijs het dan
-naar het bestand op je server in plaats van naar een URL:
-
-```bash
--l net.unraid.docker.icon=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png
-```
-
-Dat bestand staat er al na het uitpakken. Voor de camera-containers doe je
-hetzelfde met `-e UNRAID_ICON=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png`
-op de controller; die geeft het label door aan elke camera die hij aanmaakt.
-Unraid cachet iconen, dus geef het na een wijziging een paar seconden en ververs
-de pagina met Ctrl+F5.
+aangemaakt — let op dat je het blok hierboven letterlijk gebruikt en niet een
+eerdere versie uit je shell-historie. Unraid cachet iconen, dus geef het na een
+wijziging even en ververs met Ctrl+F5.
 
 ### Met de Unraid-template
 
