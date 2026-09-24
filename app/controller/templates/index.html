@@ -829,12 +829,10 @@ function renderGpuPill(info) {
     .map(([family, message]) => `${family}: ${message}`);
   const nodes = ((info && info.details) || {}).render_nodes || [];
   pill.title = [
-    errors.length ? errors.join("
-") : "All probed encoders work.",
+    errors.length ? errors.join("\n") : "All probed encoders work.",
     nodes.length ? "Render nodes: " + nodes.join(", ") : "No render node found.",
     "Click to detect again.",
-  ].join("
-");
+  ].join("\n");
 }
 
 async function refreshHardware() {
