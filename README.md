@@ -87,8 +87,7 @@ docker run -d \
   -e MACVLAN_PARENT=br0 \
   -e STATE_DIR=/state \
   -e DATA_DIR=/data \
-  -e UNRAID_ICON=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png \
-  -l net.unraid.docker.icon=/mnt/user/appdata/rtsp-onvif-bridge/unraid/icon.png \
+  -l net.unraid.docker.icon=https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png \
   -l "net.unraid.docker.webui=http://[IP]:[PORT:8080]/" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data \
@@ -104,24 +103,36 @@ vraagteken zonder link. De camera-containers krijgen hetzelfde icoon; die hebben
 bewust geen WebUI-link, omdat Unraids `[IP]`-placeholder naar de host wijst
 terwijl een camera op zijn eigen DHCP-adres luistert.
 
-Het icoon wijst naar het bestand dat bij het uitpakken al op je server is gezet.
-Dat is betrouwbaarder dan een URL: die moet Unraid zelf ophalen, en mislukt dat,
-dan krijg je het vraagteken terug zonder melding. Draai je dit niet op Unraid of
-staat je appdata elders, gebruik dan de URL-variant:
-`https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png`.
+### Blijft het vraagteken staan?
 
-De `-e UNRAID_ICON=` geeft hetzelfde pad door aan de camera-containers.
-
-Verschijnt het icoon niet, controleer dan of de labels er werkelijk op staan:
+Controleer eerst of de labels er werkelijk op staan:
 
 ```bash
 docker inspect onvif-bridge-controller --format '{{json .Config.Labels}}'
 ```
 
-Zie je geen `net.unraid.docker.*` terug, dan is de container met een oud commando
-aangemaakt — let op dat je het blok hierboven letterlijk gebruikt en niet een
-eerdere versie uit je shell-historie. Unraid cachet iconen, dus geef het na een
-wijziging even en ververs met Ctrl+F5.
+Staan ze er wel en zie je nog steeds het vraagteken, dan zit het in Unraids
+icoon-cache. Die is gebaseerd op de *image*-naam, niet op de container, en er is
+een bekende bug: voor een container zonder dockerMan-template wordt de cache
+nooit ongeldig verklaard, dus een placeholder die er één keer in staat blijft
+staan. Leeg hem en installeer de template:
+
+```bash
+# 1. gecachte iconen voor dit image weggooien
+rm -f /boot/config/plugins/dockerMan/images/rtsp-onvif-bridge*
+rm -f /usr/local/emhttp/state/plugins/dynamix.docker.manager/images/rtsp-onvif-bridge*
+
+# 2. de template installeren
+cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml    /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
+```
+
+Daarna het Docker-tabblad verversen met Ctrl+F5.
+
+De template is hier de betrouwbare route: dockerMan zoekt het icoon op aan de
+hand van de **image**-naam (`rtsp-onvif-bridge:latest`), niet aan de hand van de
+containernaam. Eén template dekt daarmee de controller én alle camera-containers,
+want die draaien op hetzelfde image. Je hoeft de containers niet via de template
+aan te maken; het `docker run`-commando hierboven blijft prima.
 
 ### Met de Unraid-template
 
