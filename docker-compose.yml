@@ -21,6 +21,10 @@ services:
       DATA_DIR: /data
     ports:
       - "${WEB_PORT:-8080}:8080"
+    labels:
+      # Unraid's Docker tab picks these up and shows an icon plus a WebUI link.
+      net.unraid.docker.icon: "https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8080]/"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data

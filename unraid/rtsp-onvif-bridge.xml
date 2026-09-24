@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>rtsp-onvif-bridge</Name>
+  <Repository>rtsp-onvif-bridge:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Lexvdpoel/rtsp-onvif-bridge/issues</Support>
+  <Project>https://github.com/Lexvdpoel/rtsp-onvif-bridge</Project>
+  <Overview>
+    Publishes RTSP streams as virtual ONVIF cameras. Each camera runs in its own
+    container with its own MAC address and takes its own DHCP lease, so an NVR
+    such as UniFi Protect sees them as separate physical devices.
+
+    Build the image first on the Unraid terminal:
+    cd /mnt/user/appdata/rtsp-onvif-bridge &amp;&amp; docker build -t rtsp-onvif-bridge:latest .
+
+    Set MACVLAN_PARENT to the interface that carries your LAN (usually br0).
+    The container needs the Docker socket because it creates the camera
+    containers itself.
+  </Overview>
+  <Category>HomeAutomation: Tools: Network:Management</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="WebUI port" Target="8080" Default="8080" Mode="tcp"
+          Description="Port the management interface listens on."
+          Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Config storage" Target="/data" Default="/mnt/user/appdata/rtsp-onvif-bridge/data" Mode="rw"
+          Description="Camera configuration and the login account. Back this up."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/rtsp-onvif-bridge/data</Config>
+
+  <Config Name="Runtime state" Target="/state" Default="/mnt/user/appdata/rtsp-onvif-bridge/state" Mode="rw"
+          Description="Shared with the camera containers, which report their status here."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/rtsp-onvif-bridge/state</Config>
+
+  <Config Name="Docker socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw"
+          Description="Required: the controller creates and supervises one container per camera."
+          Type="Path" Display="advanced" Required="true" Mask="false">/var/run/docker.sock</Config>
+
+  <Config Name="LAN interface (MACVLAN_PARENT)" Target="MACVLAN_PARENT" Default="br0"
+          Description="Host interface the virtual cameras hang off. Usually br0 on Unraid; check with: ip -br link"
+          Type="Variable" Display="always" Required="true" Mask="false">br0</Config>
+
+  <Config Name="Role" Target="ROLE" Default="controller"
+          Description="Leave on controller. The same image also runs the camera role, which the controller starts itself."
+          Type="Variable" Display="advanced" Required="true" Mask="false">controller</Config>
+
+  <Config Name="Camera image tag (BRIDGE_IMAGE)" Target="BRIDGE_IMAGE" Default="rtsp-onvif-bridge:latest"
+          Description="Image used for the camera containers. Keep it the same as the tag you built."
+          Type="Variable" Display="advanced" Required="true" Mask="false">rtsp-onvif-bridge:latest</Config>
+
+  <Config Name="macvlan network name" Target="MACVLAN_NETWORK" Default="camlan"
+          Description="Docker network the cameras join. Created automatically if missing."
+          Type="Variable" Display="advanced" Required="false" Mask="false">camlan</Config>
+
+  <Config Name="macvlan subnet" Target="MACVLAN_SUBNET" Default="100.127.255.0/24"
+          Description="A parking subnet that does not exist on your LAN. Docker hands each camera a throwaway address from it, which the camera flushes before asking your real DHCP server. Only change this if 100.127.255.0/24 is in use on your network."
+          Type="Variable" Display="advanced" Required="false" Mask="false">100.127.255.0/24</Config>
+
+  <Config Name="Config directory" Target="DATA_DIR" Default="/data"
+          Description="Path inside the container. Leave as is."
+          Type="Variable" Display="advanced" Required="false" Mask="false">/data</Config>
+
+  <Config Name="State directory" Target="STATE_DIR" Default="/state"
+          Description="Path inside the container. Leave as is."
+          Type="Variable" Display="advanced" Required="false" Mask="false">/state</Config>
+</Container>

@@ -19,6 +19,16 @@ from ..common import models
 LABEL_MANAGED = "rtsp-onvif-bridge.managed"
 LABEL_CAM_ID = "rtsp-onvif-bridge.camera-id"
 
+# Unraid's Docker tab reads these off any container, whoever created it, and
+# uses them for the icon and the WebUI link. The cameras get an icon but no
+# WebUI: Unraid's [IP] placeholder resolves to the host, while a camera answers
+# on its own DHCP address, so the link it produced would point at the wrong
+# machine.
+UNRAID_ICON = (
+    "https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge"
+    "/main/unraid/icon.png"
+)
+
 # Docker's macvlan driver refuses to create a network without an IPv4 pool
 # ("ipv4 pool is empty"), so the DHCP server cannot simply be left in charge by
 # using the null IPAM driver. Instead the network is given a parking subnet that
@@ -178,7 +188,11 @@ class DockerManager:
                 cap_add=["NET_ADMIN", "NET_RAW"],
                 restart_policy={"Name": "unless-stopped"},
                 volumes={source: {"bind": self.state_dir, "mode": "rw"}},
-                labels={LABEL_MANAGED: "true", LABEL_CAM_ID: cam["id"]},
+                labels={
+                    LABEL_MANAGED: "true",
+                    LABEL_CAM_ID: cam["id"],
+                    "net.unraid.docker.icon": UNRAID_ICON,
+                },
                 detach=True,
                 **extra,
             )

@@ -87,6 +87,8 @@ docker run -d \
   -e MACVLAN_PARENT=br0 \
   -e STATE_DIR=/state \
   -e DATA_DIR=/data \
+  -l net.unraid.docker.icon=https://raw.githubusercontent.com/Lexvdpoel/rtsp-onvif-bridge/main/unraid/icon.png \
+  -l "net.unraid.docker.webui=http://[IP]:[PORT:8080]/" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /mnt/user/appdata/rtsp-onvif-bridge/data:/data \
   -v /mnt/user/appdata/rtsp-onvif-bridge/state:/state \
@@ -94,6 +96,32 @@ docker run -d \
 ```
 
 Pas `MACVLAN_PARENT` aan als je interface anders heet.
+
+De twee `-l`-regels zorgen dat Unraid in het Docker-tabblad een camera-icoon
+toont en een **WebUI**-link in het contextmenu zet, in plaats van het standaard
+vraagteken zonder link. De camera-containers krijgen hetzelfde icoon; die hebben
+bewust geen WebUI-link, omdat Unraids `[IP]`-placeholder naar de host wijst
+terwijl een camera op zijn eigen DHCP-adres luistert.
+
+### Met de Unraid-template
+
+Wil je de container via **Add Container** beheren in plaats van via de
+commandoregel, installeer dan de meegeleverde template. Poort 8080, de paden,
+het icoon en de WebUI-link staan er al in:
+
+```bash
+cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml \
+   /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
+```
+
+Daarna in Unraid: **Docker → Add Container → Template → rtsp-onvif-bridge**.
+Controleer `MACVLAN_PARENT` en klik Apply.
+
+De template verwijst naar het lokaal gebouwde image `rtsp-onvif-bridge:latest`,
+dus `docker build` moet eerst gedraaid hebben. Unraid probeert bij Apply het
+image te pullen; staat het al lokaal, dan is die pull-melding niet erg. Loopt het
+daar vast, gebruik dan de `docker run`-route hierboven — die doet precies
+hetzelfde.
 
 ### Met compose-plugin
 
