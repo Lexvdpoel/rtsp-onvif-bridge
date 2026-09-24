@@ -141,11 +141,19 @@ class OnvifService:
         )
 
     def _video_encoder_config(self, profile: dict, tag: str = "tt:VideoEncoderConfiguration") -> str:
+        encoding = getattr(self.cfg, "encoding", "H264") or "H264"
+        # The codec-specific block only belongs there for the codec in use.
+        codec_block = (
+            "<tt:H264><tt:GovLength>30</tt:GovLength>"
+            "<tt:H264Profile>Main</tt:H264Profile></tt:H264>"
+            if encoding == "H264"
+            else ""
+        )
         return (
             f'<{tag} token="VEC_{profile["token"]}">'
             f"<tt:Name>VEC_{profile['token']}</tt:Name>"
             "<tt:UseCount>1</tt:UseCount>"
-            "<tt:Encoding>H264</tt:Encoding>"
+            f"<tt:Encoding>{encoding}</tt:Encoding>"
             "<tt:Resolution>"
             f"<tt:Width>{profile['width']}</tt:Width>"
             f"<tt:Height>{profile['height']}</tt:Height>"
@@ -156,9 +164,8 @@ class OnvifService:
             "<tt:EncodingInterval>1</tt:EncodingInterval>"
             f"<tt:BitrateLimit>{profile['bitrate']}</tt:BitrateLimit>"
             "</tt:RateControl>"
-            "<tt:H264><tt:GovLength>30</tt:GovLength>"
-            "<tt:H264Profile>Main</tt:H264Profile></tt:H264>"
-            "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type>"
+            + codec_block
+            + "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type>"
             "<tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address>"
             "<tt:Port>0</tt:Port><tt:TTL>1</tt:TTL><tt:AutoStart>false</tt:AutoStart>"
             "</tt:Multicast>"

@@ -34,6 +34,11 @@ RTSP-bronnen ──────────┼─ onvif-cam-c3d4  MAC 02:1f:… 
    zodat de camera opduikt in de "scan naar ONVIF-apparaten" van je NVR.
 5. **Snapshots** — `/snapshot` levert een JPEG, met ffmpeg uit de stream getrokken
    en enkele seconden gecached.
+6. **Stream-detectie** — ffprobe leest bij het opstarten de echte codec, resolutie
+   en framerate van de bron, en dat is wat er via ONVIF geadverteerd wordt. Een
+   H265-bron wordt dus ook als H265 aangeboden.
+7. **Doorvoermeting** — de relay telt de bytes die binnenkomen en uitgaan; daaruit
+   volgt de werkelijke in- en uitgaande bitrate per camera.
 
 ## Vereisten
 
@@ -138,6 +143,20 @@ docker compose up -d
 Open `http://<docker-host>:8080`. De macvlan-netwerk `camlan` wordt bij de eerste
 start automatisch aangemaakt.
 
+### Eerste keer: account aanmaken
+
+De eerste keer dat je de UI opent vraagt hij om een gebruikersnaam en wachtwoord.
+Die beveiligen deze beheerinterface — niet de camera's zelf, die hebben hun eigen
+ONVIF-credentials. Het wachtwoord wordt met scrypt gehasht opgeslagen in
+`data/auth.json`; de sessie is een ondertekende cookie, dus een herstart van de
+container logt je niet uit.
+
+Wachtwoord wijzigen of uitloggen kan via **Account** rechtsboven. Een
+wachtwoordwijziging verloopt alle bestaande sessies.
+
+Wachtwoord kwijt? Verwijder `data/auth.json` en herstart de controller; de UI
+vraagt dan opnieuw om een account. De camera's blijven ongemoeid.
+
 ### Camera toevoegen
 
 **Add camera** → naam, RTSP-URL van de bron, en de gebruikersnaam/wachtwoord
@@ -149,8 +168,11 @@ Optioneel een substream-URL: dat levert een tweede ONVIF-profiel op, waarmee een
 NVR een lage resolutie kan kiezen voor previews.
 
 De breedte/hoogte/framerate/bitrate zijn **alleen metadata**. Er wordt niets
-gehercodeerd; ze vertellen de NVR wat hij kan verwachten. Zet ze gelijk aan de
-echte stream, anders kan een NVR verkeerde keuzes maken.
+gehercodeerd; ze vertellen de NVR wat hij kan verwachten. Standaard staat
+**Detect from the source stream** aan: de camera leest die waarden bij het
+opstarten met ffprobe uit de bron en adverteert wat er echt is. De ingevulde
+waarden gelden dan alleen tot de probe klaar is, of als die mislukt. Zet de
+detectie uit als je bewust iets anders wilt adverteren.
 
 Zodra de camera draait toont de kaart het MAC-adres, het via DHCP gekregen IP, het
 ONVIF-endpoint en de RTSP-URL. Klik op een waarde om die te kopiëren.
@@ -171,6 +193,36 @@ vast zolang de camera bestaat, ook na een rebuild of een herstart van de host.
 Lukt adoptie niet, zet dan tijdelijk **Require authentication** uit en probeer
 opnieuw — zo zie je meteen of het probleem in de credentials zit of ergens anders.
 Zet het daarna weer aan.
+
+## Doorvoer aflezen
+
+Elke camerakaart toont de gemeten in- en uitgaande bitrate met een grafiekje van
+de laatste vijf minuten; bovenaan staan de totalen over alle camera's. Beweeg met
+de muis over een grafiekje voor de waarde op dat moment.
+
+De getallen komen uit de byte-tellers van de relay, niet uit een schatting:
+**in** is wat er van de bron binnenkomt, **uit** is wat er naar de NVR's gaat. Met
+twee kijkers op dezelfde camera is uitgaand dus ongeveer het dubbele van inkomend.
+Staat de relay uit, dan loopt het verkeer niet door de container en valt er niets
+te meten.
+
+**CBR of VBR** wordt afgeleid, niet uitgelezen: RTSP vertelt niet welke
+rate-control de bron gebruikt. De bridge kijkt hoe sterk de gemeten bitrate
+varieert over de laatste twee minuten; blijft die binnen 8% van het gemiddelde,
+dan is het CBR. Het percentage staat erbij, zodat je zelf kunt zien hoe uitgesproken
+het geval is.
+
+## Backup en restore
+
+**Backup** downloadt alle camera's als één JSON-bestand. **Restore** leest dat
+bestand terug en biedt twee keuzes: alles vervangen, of de camera's uit de backup
+toevoegen aan wat er al staat.
+
+Een restore behoudt de camera-ID's, en dus de MAC-adressen. Je DHCP-reserveringen
+blijven daarmee geldig, ook als je de bridge op een andere host opnieuw opbouwt.
+
+Let op: het backupbestand bevat de ONVIF-wachtwoorden in platte tekst — anders zou
+een restore geen werkende camera's opleveren. Bewaar het navenant.
 
 ## De macvlan-valkuil
 
@@ -199,6 +251,9 @@ Klik **Logs** op een camerakaart — de meeste antwoorden staan daar.
 | Adoptie faalt met een auth-fout | Test met **Require authentication** uit. Sommige NVR's sturen alleen HTTP Basic, andere alleen WS-UsernameToken — beide worden ondersteund, maar een typefout in het wachtwoord is de gebruikelijke oorzaak. |
 | Beeld blijft zwart, ONVIF werkt wel | De relay krijgt de bron niet binnen. Test de bron-URL rechtstreeks: `ffplay -rtsp_transport tcp "rtsp://…"`. Probeer transport UDP als TCP hapert. |
 | Snapshot geeft 503 | ffmpeg kreeg geen frame binnen 15 seconden — meestal dezelfde oorzaak als hierboven. |
+| Bitrate blijft op nul staan | De relay staat uit voor die camera, of hij is nog niet gestart. Zonder relay loopt het verkeer niet door de container en valt er niets te meten. |
+| Detectie blijft op `probing…` | ffprobe komt niet bij de bron. Kijk in de logs naar de regel die met `[probe]` begint; meestal klopt de RTSP-URL of het transport niet. |
+| Wachtwoord van de UI kwijt | Verwijder `data/auth.json` en herstart de controller; hij vraagt dan opnieuw om een account. |
 | `ipv4 pool is empty` bij het aanmaken van het netwerk | Het macvlan-netwerk werd zonder IPv4-pool aangemaakt. Zorg dat `MACVLAN_SUBNET` gevuld is (default `100.127.255.0/24`). De oude instelling `MACVLAN_IPAM=null` werkt niet: Docker's macvlan-driver eist een pool. |
 | `Image not found` bij toevoegen | `docker compose build` nog niet gedraaid, of `BRIDGE_IMAGE` wijkt af van de gebouwde tag. |
 
@@ -218,6 +273,10 @@ camera-container (of in `docker-compose.yml`, waarna je de camera's herstart).
 | [app/camera/wsdiscovery.py](app/camera/wsdiscovery.py) | WS-Discovery responder |
 | [app/camera/mediamtx.py](app/camera/mediamtx.py) | RTSP-relay |
 | [app/camera/snapshot.py](app/camera/snapshot.py) | JPEG-snapshots via ffmpeg |
+| [app/controller/auth.py](app/controller/auth.py) | login, wachtwoordhashing, sessiecookies |
+| [app/controller/backup.py](app/controller/backup.py) | export en validatie van een backup |
+| [app/camera/probe.py](app/camera/probe.py) | ffprobe-detectie van de bronstream |
+| [app/camera/stats.py](app/camera/stats.py) | doorvoermeting en CBR/VBR-afleiding |
 | [app/common/models.py](app/common/models.py) | cameramodel, MAC-generatie, validatie |
 
 Eén image, twee rollen: `ROLE=controller` start de web-UI, `ROLE=camera` start een
@@ -230,8 +289,11 @@ elke camera schrijft zijn status naar `state/<id>.json`, dat de UI uitleest.
   de host. Zet de web-UI niet op het open internet.
 - Camera-containers draaien met `NET_ADMIN` en `NET_RAW`; dat is het minimum voor
   een DHCP-client op een eigen interface.
-- Wachtwoorden staan in platte tekst in `data/cameras.json` — de camera's moeten
-  ze kunnen aanbieden. Beperk de rechten op die map.
+- De web-UI zit achter een login die je bij eerste gebruik zelf instelt. Het
+  beheerderswachtwoord staat scrypt-gehasht in `data/auth.json`.
+- De ONVIF-wachtwoorden van de camera's staan in platte tekst in
+  `data/cameras.json`, en ook in een gedownloade backup — de camera's moeten ze
+  kunnen aanbieden. Beperk de rechten op die map en op je backups.
 - De RTSP-relay vraagt geen wachtwoord. Iedereen op het LAN die het IP en pad kent
   kan meekijken. Zet **Relay the stream through this camera's IP** uit als je dat
   niet wilt; dan krijgt de NVR de bron-URL rechtstreeks.

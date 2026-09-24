@@ -17,8 +17,9 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import mediamtx, net
+from . import mediamtx, net, probe as probe_mod
 from .onvif_server import serve as serve_onvif
+from .stats import StatsCollector
 from .wsdiscovery import DiscoveryResponder
 
 HEARTBEAT_SECONDS = 10
@@ -60,6 +61,7 @@ class Config:
     proxy: bool
     rtsp_transport: str
     snapshot_enabled: bool
+    autodetect: bool
     width: int
     height: int
     fps: int
@@ -68,6 +70,8 @@ class Config:
     height_sub: int
     fps_sub: int
     bitrate_sub: int
+    # Replaced by the probed codec when autodetect is on.
+    encoding: str = "H264"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -91,6 +95,7 @@ class Config:
             proxy=_env_bool("PROXY", True),
             rtsp_transport=_env("RTSP_TRANSPORT", "tcp"),
             snapshot_enabled=_env_bool("SNAPSHOT", True),
+            autodetect=_env_bool("AUTODETECT", True),
             width=_env_int("VIDEO_WIDTH", 1920),
             height=_env_int("VIDEO_HEIGHT", 1080),
             fps=_env_int("VIDEO_FPS", 15),
@@ -112,6 +117,8 @@ class State:
         self.gateway = ""
         self.status = "starting"
         self.message = ""
+        self.detected: dict = {}
+        self.stats: dict = {}
 
     def refresh_from_interface(self):
         self.ip = net.read_ip()
@@ -153,8 +160,61 @@ def _status_payload(cfg: Config, state: State) -> dict:
         else "",
         "rtsp_url": f"rtsp://{state.ip}:{cfg.rtsp_port}/main" if state.ip else "",
         "snapshot_url": f"http://{state.ip}:{cfg.onvif_port}/snapshot" if state.ip else "",
+        "detected": state.detected,
+        "stats": state.stats,
+        "advertised": {
+            "encoding": cfg.encoding,
+            "width": cfg.width,
+            "height": cfg.height,
+            "fps": cfg.fps,
+            "bitrate": cfg.bitrate,
+            "autodetect": cfg.autodetect,
+        },
         "updated_at": time.time(),
     }
+
+
+def _probed_bitrate(state: State) -> int:
+    """Bitrate ffprobe reported for the main stream, 0 when it reported none."""
+    return (state.detected or {}).get("main", {}).get("bitrate_kbps", 0)
+
+
+def _apply_probe(cfg: Config, state: State, sub: bool = False):
+    """Probe a source and, when autodetect is on, advertise what was found."""
+    url = cfg.source_url_sub if sub else cfg.source_url
+    if not url:
+        return
+    result = probe_mod.probe(url, cfg.rtsp_transport)
+    key = "sub" if sub else "main"
+    state.detected = dict(state.detected or {})
+    state.detected[key] = result
+
+    if not result.get("ok"):
+        print(f"[probe] {key}: {result.get('error')}")
+        return
+    print(
+        f"[probe] {key}: {result['codec']} {result['width']}x{result['height']} "
+        f"@ {result['fps']}fps"
+    )
+    if not cfg.autodetect:
+        return
+
+    if sub:
+        if result["width"]:
+            cfg.width_sub, cfg.height_sub = result["width"], result["height"]
+        if result["fps"]:
+            cfg.fps_sub = max(1, round(result["fps"]))
+        if result["bitrate_kbps"]:
+            cfg.bitrate_sub = result["bitrate_kbps"]
+        return
+
+    if result["width"]:
+        cfg.width, cfg.height = result["width"], result["height"]
+    if result["fps"]:
+        cfg.fps = max(1, round(result["fps"]))
+    if result["bitrate_kbps"]:
+        cfg.bitrate = result["bitrate_kbps"]
+    cfg.encoding = probe_mod.onvif_encoding(result["codec"])
 
 
 def main() -> int:
@@ -204,7 +264,22 @@ def main() -> int:
         if relay_proc is None:
             cfg.proxy = False  # fall back to handing out the upstream URL
 
-    # 3. ONVIF + discovery ------------------------------------------------
+    # 3. throughput + stream detection ------------------------------------
+    collector = None
+    if cfg.proxy:
+        collector = StatsCollector()
+        collector.start()
+
+    # Probing opens a short connection to the real camera, so keep it off the
+    # startup path: ONVIF must answer immediately, with the configured values
+    # until the probe replaces them.
+    threading.Thread(
+        target=lambda: (_apply_probe(cfg, state), _apply_probe(cfg, state, sub=True)),
+        name="probe",
+        daemon=True,
+    ).start()
+
+    # 4. ONVIF + discovery ------------------------------------------------
     httpd = serve_onvif(cfg, state)
     discovery = DiscoveryResponder(cfg, state)
     discovery.start()
@@ -214,7 +289,7 @@ def main() -> int:
     state_file.write(_status_payload(cfg, state))
     print(f"[camera] ONVIF ready at http://{state.ip}:{cfg.onvif_port}/onvif/device_service")
 
-    # 4. supervise --------------------------------------------------------
+    # 5. supervise --------------------------------------------------------
     stopping = threading.Event()
 
     def _shutdown(signum, frame):
@@ -235,9 +310,20 @@ def main() -> int:
         if dhcp_proc is not None and dhcp_proc.poll() is not None:
             print("[camera] DHCP client exited; restarting it")
             dhcp_proc = net.start_dhcp(cfg.hostname, "/tmp/lease.env")
+
+        if collector is not None:
+            state.stats = collector.snapshot()
+            # RTSP sources rarely declare a bitrate, so fall back to the
+            # measured one for the value ONVIF advertises.
+            measured = state.stats.get("measured_kbps", 0)
+            if cfg.autodetect and measured and not _probed_bitrate(state):
+                cfg.bitrate = measured
+
         state.status = "running" if state.ip else "no-address"
         state_file.write(_status_payload(cfg, state))
 
+    if collector is not None:
+        collector.stop()
     discovery.stop()
     httpd.shutdown()
     for proc in (relay_proc, dhcp_proc):

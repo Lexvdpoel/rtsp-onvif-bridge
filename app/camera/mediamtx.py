@@ -33,7 +33,9 @@ def write_config(paths: dict[str, str], rtsp_port: int, transport: str = "tcp") 
         "logDestinations: [stdout]\n"
         "readTimeout: 15s\n"
         "writeTimeout: 15s\n"
-        "api: no\n"
+        # Bound to loopback: it is only read by this container's stats collector.
+        "api: yes\n"
+        "apiAddress: 127.0.0.1:9997\n"
         "metrics: no\n"
         "pprof: no\n"
         "playback: no\n"

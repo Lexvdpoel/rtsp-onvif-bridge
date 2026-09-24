@@ -11,6 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from ..common import models
+from . import backup as backup_mod
+from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
 from .docker_mgr import DockerError, DockerManager
 from .store import CameraStore
 
@@ -22,8 +24,20 @@ TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 STATE_STALE_SECONDS = 45
 
 store = CameraStore(DATA_DIR)
+auth = AuthStore(DATA_DIR)
 manager: DockerManager | None = None
 startup_error: str = ""
+
+# Reachable before signing in: the page shell itself, and the endpoints the
+# login and first-run screens need in order to work.
+PUBLIC_PATHS = {
+    "/",
+    "/index.html",
+    "/api/auth/state",
+    "/api/auth/setup",
+    "/api/auth/login",
+    "/favicon.ico",
+}
 
 
 @asynccontextmanager
@@ -55,6 +69,108 @@ def _autostart():
 
 
 app = FastAPI(title="RTSP to ONVIF bridge", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """Everything but the login surface needs a valid session cookie."""
+    path = request.url.path
+    if path in PUBLIC_PATHS or request.method == "OPTIONS":
+        return await call_next(request)
+    if auth.valid_token(request.cookies.get(COOKIE_NAME, "")):
+        return await call_next(request)
+
+    detail = (
+        "Set a username and password first."
+        if not auth.configured
+        else "Sign in to continue."
+    )
+    return JSONResponse({"detail": detail, "auth_required": True}, status_code=401)
+
+
+def _set_session(response: JSONResponse) -> JSONResponse:
+    response.set_cookie(
+        COOKIE_NAME,
+        auth.issue_token(),
+        max_age=SESSION_DAYS * 86400,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+# ------------------------------------------------------------------------ auth
+
+
+@app.get("/api/auth/state")
+async def auth_state(request: Request):
+    return {
+        "configured": auth.configured,
+        "authenticated": auth.valid_token(request.cookies.get(COOKIE_NAME, "")),
+        "username": auth.username(),
+    }
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(request: Request):
+    if auth.configured:
+        return JSONResponse(
+            {"detail": "An account already exists; sign in instead."}, status_code=409
+        )
+    payload = await request.json()
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", ""))
+    if len(username) < 3:
+        return JSONResponse(
+            {"detail": "The username needs at least 3 characters."}, status_code=400
+        )
+    if len(password) < 8:
+        return JSONResponse(
+            {"detail": "The password needs at least 8 characters."}, status_code=400
+        )
+
+    auth.set_credentials(username, password)
+    return _set_session(JSONResponse({"configured": True, "username": username}))
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    if not auth.configured:
+        return JSONResponse(
+            {"detail": "No account exists yet."}, status_code=409
+        )
+    payload = await request.json()
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", ""))
+    if not auth.verify(username, password):
+        return JSONResponse(
+            {"detail": "Wrong username or password."}, status_code=401
+        )
+    return _set_session(JSONResponse({"authenticated": True, "username": username}))
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response
+
+
+@app.post("/api/auth/password")
+async def auth_password(request: Request):
+    payload = await request.json()
+    current = str(payload.get("current", ""))
+    new = str(payload.get("new", ""))
+    if not auth.verify(auth.username(), current):
+        return JSONResponse({"detail": "The current password is wrong."}, status_code=403)
+    if len(new) < 8:
+        return JSONResponse(
+            {"detail": "The new password needs at least 8 characters."}, status_code=400
+        )
+    # This invalidates every existing session, including this one.
+    auth.set_credentials(auth.username(), new)
+    return _set_session(JSONResponse({"changed": True}))
 
 
 # --------------------------------------------------------------------- helpers
@@ -230,6 +346,73 @@ async def camera_password(cam_id: str):
     """Returned only on explicit request, so the list view stays free of secrets."""
     cam = _get_or_404(cam_id)
     return {"password": cam.get("password", "")}
+
+
+@app.get("/api/backup")
+async def download_backup():
+    """Full camera configuration, including credentials, as a download."""
+    payload = backup_mod.export(store.list())
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    return JSONResponse(
+        payload,
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="onvif-bridge-backup-{stamp}.json"'
+        },
+    )
+
+
+@app.post("/api/restore")
+async def restore_backup(request: Request):
+    body = await request.json()
+    document = body.get("backup", body)
+    replace = bool(body.get("replace", True)) if isinstance(body, dict) else True
+
+    try:
+        cameras = backup_mod.parse(document)
+    except backup_mod.RestoreError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    mgr = manager
+    warnings: list[str] = []
+
+    if replace:
+        # Tear down what is running before the configuration underneath changes.
+        for existing in store.list():
+            if mgr is not None:
+                try:
+                    mgr.remove(existing)
+                except DockerError as exc:
+                    warnings.append(f"{existing['name']}: {exc}")
+        store.replace_all(cameras)
+    else:
+        for cam in cameras:
+            if mgr is not None:
+                try:
+                    mgr.remove(cam)
+                except DockerError as exc:
+                    warnings.append(f"{cam['name']}: {exc}")
+            store.upsert(cam)
+
+    started = 0
+    for cam in cameras:
+        if not cam.get("enabled"):
+            continue
+        if mgr is None:
+            warnings.append("Docker is unavailable, so nothing was started.")
+            break
+        try:
+            mgr.start(cam)
+            started += 1
+        except DockerError as exc:
+            warnings.append(f"{cam['name']}: {exc}")
+
+    return {
+        "restored": len(cameras),
+        "started": started,
+        "replaced": replace,
+        "warnings": warnings,
+    }
 
 
 @app.get("/api/orphans")

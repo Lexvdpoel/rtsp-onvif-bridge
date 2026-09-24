@@ -6,22 +6,29 @@
 <title>RTSP to ONVIF bridge</title>
 <style>
   :root {
+    color-scheme: light;
     --bg: #f5f6f8;
     --panel: #ffffff;
+    --surface-1: #fcfcfb;
     --border: #dfe3e8;
     --text: #1c2128;
     --muted: #6b7684;
-    --accent: #2f6fed;
+    --accent: #2a78d6;
     --ok: #1f9d55;
     --warn: #c47f00;
     --err: #d23c3c;
+    /* Categorical slots 1 and 2 of the reference palette: incoming / outgoing. */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
     --shadow: 0 1px 3px rgba(16, 24, 40, .08);
     --radius: 10px;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
       --bg: #14171c;
       --panel: #1c2027;
+      --surface-1: #1a1a19;
       --border: #2c323b;
       --text: #e6e9ee;
       --muted: #97a0ad;
@@ -29,6 +36,8 @@
       --ok: #3fbf72;
       --warn: #e0a33a;
       --err: #ef6b6b;
+      --series-1: #3987e5;
+      --series-2: #d95926;
       --shadow: none;
     }
   }
@@ -43,14 +52,14 @@
   }
   header h1 { font-size: 18px; margin: 0; font-weight: 650; }
   header .spacer { flex: 1; }
-  main { padding: 24px; max-width: 1180px; margin: 0 auto; }
+  main { padding: 20px 24px 40px; max-width: 1180px; margin: 0 auto; }
 
   .pill {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 12px; padding: 3px 9px; border-radius: 999px;
     border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
   }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
   .dot.err { background: var(--err); }
 
@@ -63,11 +72,34 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger:hover { border-color: var(--err); color: var(--err); }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  button.link {
+    border: 0; background: none; color: var(--muted); padding: 7px 4px;
+    text-decoration: underline; text-underline-offset: 3px;
+  }
+  button.link:hover { color: var(--accent); }
 
   .banner {
     padding: 12px 16px; border-radius: var(--radius); margin-bottom: 18px;
     border: 1px solid var(--err); color: var(--err); background: var(--panel);
   }
+
+  /* ---- KPI row: total throughput across all cameras ---- */
+  .kpis { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+  .kpi {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 12px 16px; min-width: 190px; flex: 1;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .kpi .body { min-width: 0; }
+  .kpi .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); display: flex; align-items: center; gap: 6px;
+  }
+  .kpi .figure { font-size: 24px; font-weight: 600; line-height: 1.25; white-space: nowrap; }
+  .kpi .sub { font-size: 12px; color: var(--muted); }
+  .kpi .spark { margin-left: auto; }
+  .swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
 
   .card {
     background: var(--panel); border: 1px solid var(--border);
@@ -88,6 +120,30 @@
     font-size: 13px; word-break: break-all; }
   .copy { cursor: pointer; border-bottom: 1px dashed var(--border); }
   .copy:hover { border-bottom-color: var(--accent); color: var(--accent); }
+
+  /* ---- throughput block inside a camera card ---- */
+  .flow {
+    margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: minmax(160px, 220px) 1fr; gap: 16px;
+    align-items: center;
+  }
+  @media (max-width: 620px) { .flow { grid-template-columns: 1fr; } }
+  .legend { display: flex; flex-direction: column; gap: 6px; }
+  .legend .row { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+  .legend .name { color: var(--muted); min-width: 30px; }
+  .legend .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .spark-wrap { position: relative; }
+  .spark { display: block; width: 100%; height: 44px; overflow: visible; }
+  .spark-empty { font-size: 12px; color: var(--muted); padding: 12px 0; }
+  .tip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+    padding: 6px 9px; font-size: 12px; box-shadow: var(--shadow);
+    white-space: nowrap; opacity: 0; transition: opacity .1s;
+  }
+  .tip.show { opacity: 1; }
+  .tip .trow { display: flex; align-items: center; gap: 6px; }
+  .tip .tval { font-variant-numeric: tabular-nums; margin-left: auto; font-weight: 600; }
 
   .empty { text-align: center; color: var(--muted); padding: 48px 20px; }
 
@@ -124,24 +180,69 @@
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     background: var(--panel); border: 1px solid var(--border); color: var(--text);
     padding: 10px 16px; border-radius: 8px; box-shadow: var(--shadow);
-    opacity: 0; pointer-events: none; transition: opacity .2s;
+    opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+    max-width: 90vw;
   }
   .toast.show { opacity: 1; }
   .toast.err { border-color: var(--err); color: var(--err); }
+
+  /* ---- login / first-run gate ---- */
+  #gate {
+    position: fixed; inset: 0; z-index: 100; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  #gate[hidden] { display: none; }
+  .gate-card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+    padding: 26px 26px 22px; width: min(400px, 100%);
+  }
+  .gate-card h1 { font-size: 19px; margin: 0 0 4px; }
+  .gate-card p.lead { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+  .gate-card label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+  .gate-card .row { margin-bottom: 14px; }
+  .gate-err { color: var(--err); font-size: 13px; margin: 0 0 12px; min-height: 18px; }
+  .gate-card button { width: 100%; margin-top: 4px; }
 </style>
 </head>
 <body>
+
+<div id="gate" hidden>
+  <form class="gate-card" id="gateForm">
+    <h1 id="gateTitle">Sign in</h1>
+    <p class="lead" id="gateLead">Enter your credentials to manage the cameras.</p>
+    <p class="gate-err" id="gateError"></p>
+    <div class="row">
+      <label for="gateUser">Username</label>
+      <input type="text" id="gateUser" autocomplete="username" required>
+    </div>
+    <div class="row">
+      <label for="gatePass">Password</label>
+      <input type="password" id="gatePass" autocomplete="current-password" required>
+    </div>
+    <div class="row" id="gateConfirmRow" hidden>
+      <label for="gatePass2">Repeat password</label>
+      <input type="password" id="gatePass2" autocomplete="new-password">
+    </div>
+    <button type="submit" class="primary" id="gateSubmit">Sign in</button>
+  </form>
+</div>
 
 <header>
   <h1>RTSP &rarr; ONVIF bridge</h1>
   <span class="pill" id="dockerPill"><span class="dot"></span><span>checking…</span></span>
   <span class="pill" id="netPill"><span class="dot"></span><span>network</span></span>
   <div class="spacer"></div>
+  <button id="backupBtn">Backup</button>
+  <button id="restoreBtn">Restore</button>
   <button id="addBtn" class="primary">Add camera</button>
+  <button id="accountBtn" class="link" title="Account">Account</button>
+  <input type="file" id="restoreFile" accept="application/json,.json" hidden>
 </header>
 
 <main>
   <div id="banner" class="banner" hidden></div>
+  <div class="kpis" id="kpis"></div>
   <div id="list"></div>
 </main>
 
@@ -224,8 +325,9 @@
             </select>
           </div>
           <div class="wide hint">
-            With the relay on, the NVR only ever talks to the virtual camera. Turn it off to hand the
-            NVR the upstream URL directly — lighter, but the real camera's address becomes visible.
+            With the relay on, the NVR only ever talks to the virtual camera, and the throughput
+            below can be measured. Turn it off to hand the NVR the upstream URL directly — lighter,
+            but the real camera's address becomes visible and no bitrate can be reported.
           </div>
         </div>
       </fieldset>
@@ -233,14 +335,19 @@
       <fieldset>
         <legend>Advertised video properties</legend>
         <div class="form-grid">
+          <div class="wide check" style="margin-top:0">
+            <input type="checkbox" id="f-autodetect" name="autodetect" checked>
+            <label for="f-autodetect" style="margin:0">Detect from the source stream</label>
+          </div>
+          <div class="wide hint">
+            With this on, the camera probes the source with ffprobe at startup and advertises the
+            real codec, resolution and frame rate; the bitrate falls back to the measured average.
+            The values below are then only used until the probe finishes, or if it fails.
+          </div>
           <div><label for="f-width">Width</label><input type="number" id="f-width" name="width" value="1920"></div>
           <div><label for="f-height">Height</label><input type="number" id="f-height" name="height" value="1080"></div>
           <div><label for="f-fps">Frame rate</label><input type="number" id="f-fps" name="fps" value="15"></div>
           <div><label for="f-bitrate">Bitrate (kbps)</label><input type="number" id="f-bitrate" name="bitrate" value="4096"></div>
-          <div class="wide hint">
-            These values are metadata only — they tell the NVR what to expect and do not re-encode anything.
-            Match them to the real stream.
-          </div>
         </div>
       </fieldset>
 
@@ -277,6 +384,46 @@
   </div>
 </dialog>
 
+<dialog id="restoreDialog">
+  <div class="dialog-body">
+    <h2 style="margin:0 0 12px;font-size:17px;">Restore backup</h2>
+    <p id="restoreSummary" style="margin:0 0 16px;"></p>
+    <div class="hint" style="margin-bottom:16px;">
+      Restored cameras keep their original MAC addresses, so any DHCP reservations you made
+      stay valid.
+    </div>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" id="restoreCancel">Cancel</button>
+    <button type="button" id="restoreMerge">Add to existing</button>
+    <button type="button" class="primary" id="restoreReplace">Replace everything</button>
+  </div>
+</dialog>
+
+<dialog id="accountDialog">
+  <form id="accountForm" method="dialog">
+    <div class="dialog-body">
+      <h2 style="margin:0 0 6px;font-size:17px;">Account</h2>
+      <p class="hint" id="accountWho" style="margin:0 0 18px;"></p>
+      <div class="form-grid">
+        <div class="wide">
+          <label for="a-current">Current password</label>
+          <input type="password" id="a-current" autocomplete="current-password" required>
+        </div>
+        <div class="wide">
+          <label for="a-new">New password (at least 8 characters)</label>
+          <input type="password" id="a-new" autocomplete="new-password" required minlength="8">
+        </div>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" id="signOutBtn">Sign out</button>
+      <button type="button" id="accountCancel">Cancel</button>
+      <button type="submit" class="primary">Change password</button>
+    </div>
+  </form>
+</dialog>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -284,6 +431,13 @@ const $ = (sel) => document.querySelector(sel);
 let cameras = [];
 let editingId = null;
 let logCameraId = null;
+let pendingBackup = null;
+let timers = [];
+
+// Client-side throughput history, keyed by camera id. The API reports an
+// instantaneous rate; the trend lives here.
+const HISTORY_LENGTH = 60;
+const history = new Map();
 
 // ------------------------------------------------------------------ utilities
 
@@ -293,14 +447,20 @@ function toast(message, isError) {
   el.classList.toggle("err", !!isError);
   el.classList.add("show");
   clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.remove("show"), 3200);
+  el._timer = setTimeout(() => el.classList.remove("show"), 4000);
 }
+
+class AuthError extends Error {}
 
 async function api(path, options) {
   const res = await fetch(path, options);
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { detail: text }; }
+  if (res.status === 401 && data && data.auth_required) {
+    showGate();
+    throw new AuthError(data.detail || "Sign in to continue.");
+  }
   if (!res.ok) throw new Error((data && data.detail) || res.statusText);
   if (data && data.warning) toast(data.warning, true);
   return data;
@@ -318,6 +478,63 @@ function copyText(value) {
     .catch(() => toast("Could not copy", true));
 }
 
+function formatBits(bps) {
+  const n = Number(bps) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + " Gb/s";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + " Mb/s";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + " kb/s";
+  return n.toFixed(0) + " b/s";
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return v.toFixed(i === 0 ? 0 : 1) + " " + units[i];
+}
+
+// ------------------------------------------------------------- sparkline
+
+// Two series on one shared scale — both are bits per second, so a single axis
+// is honest. Marks are 2px lines; the surface stays free of grid furniture.
+function sparkline(seriesIn, seriesOut, id) {
+  const samples = Math.max(seriesIn.length, seriesOut.length);
+  if (samples < 2) {
+    return '<div class="spark-empty">Collecting samples…</div>';
+  }
+  const W = 300, H = 44, PAD = 3;
+  const peak = Math.max(1, ...seriesIn, ...seriesOut);
+  const x = (i) => (samples === 1 ? 0 : (i / (samples - 1)) * W);
+  const y = (v) => H - PAD - (v / peak) * (H - PAD * 2);
+  const path = (series) => series.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+
+  return `
+    <svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
+         role="img" aria-label="Throughput over the last ${samples} samples"
+         data-spark="${id}" data-samples="${samples}">
+      <polyline points="${path(seriesIn)}" fill="none" stroke="var(--series-1)"
+                stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+                vector-effect="non-scaling-stroke"/>
+      <polyline points="${path(seriesOut)}" fill="none" stroke="var(--series-2)"
+                stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+                vector-effect="non-scaling-stroke"/>
+      <line class="cursor" x1="0" y1="0" x2="0" y2="${H}" stroke="var(--muted)"
+            stroke-width="1" opacity="0" vector-effect="non-scaling-stroke"/>
+    </svg>`;
+}
+
+function recordSample(cam) {
+  const stats = (cam.runtime && cam.runtime.stats) || {};
+  const entry = history.get(cam.id) || { in: [], out: [] };
+  entry.in.push(Number(stats.in_bps) || 0);
+  entry.out.push(Number(stats.out_bps) || 0);
+  if (entry.in.length > HISTORY_LENGTH) entry.in.shift();
+  if (entry.out.length > HISTORY_LENGTH) entry.out.shift();
+  history.set(cam.id, entry);
+  return entry;
+}
+
 // ------------------------------------------------------------------- rendering
 
 function cameraHealth(cam) {
@@ -332,8 +549,70 @@ function cameraHealth(cam) {
 
 function field(label, value, copyable) {
   const safe = escapeHtml(value || "—");
-  const cls = copyable && value ? ' class="value copy" data-copy="' + escapeHtml(value) + '"' : ' class="value"';
+  const cls = copyable && value
+    ? ' class="value copy" data-copy="' + escapeHtml(value) + '"'
+    : ' class="value"';
   return '<div class="field"><label>' + label + "</label><div" + cls + ">" + safe + "</div></div>";
+}
+
+function detectedText(cam) {
+  const detected = ((cam.runtime || {}).detected || {}).main;
+  const advertised = (cam.runtime || {}).advertised || {};
+  if (!detected) {
+    return cam.autodetect ? "probing…" : "manual";
+  }
+  if (!detected.ok) return "probe failed: " + detected.error;
+  const parts = [
+    (detected.codec || "").toUpperCase(),
+    `${detected.width}×${detected.height}`,
+    `${detected.fps} fps`,
+  ];
+  if (advertised.bitrate) parts.push(`${advertised.bitrate} kbps`);
+  return parts.filter(Boolean).join(" · ");
+}
+
+function rateModeText(cam) {
+  const stats = (cam.runtime || {}).stats || {};
+  if (!stats.rate_mode) return "measuring…";
+  // Inferred from how much the measured rate varies, not reported by RTSP.
+  return `${stats.rate_mode} (measured, variation ${(stats.rate_cv * 100).toFixed(1)}%)`;
+}
+
+function flowBlock(cam) {
+  const stats = (cam.runtime || {}).stats || {};
+  if (!cam.proxy) {
+    return '<div class="flow"><div class="spark-empty">'
+      + "Relay is off, so throughput cannot be measured here.</div></div>";
+  }
+  if (!cam.enabled || !stats.available) {
+    return '<div class="flow"><div class="spark-empty">'
+      + (cam.enabled ? "Waiting for the relay…" : "Camera is stopped.")
+      + "</div></div>";
+  }
+  const entry = history.get(cam.id) || { in: [], out: [] };
+  return `
+    <div class="flow">
+      <div class="legend">
+        <div class="row">
+          <span class="swatch" style="background:var(--series-1)"></span>
+          <span class="name">In</span>
+          <span class="val">${formatBits(stats.in_bps)}</span>
+        </div>
+        <div class="row">
+          <span class="swatch" style="background:var(--series-2)"></span>
+          <span class="name">Out</span>
+          <span class="val">${formatBits(stats.out_bps)}</span>
+        </div>
+        <div class="row" style="color:var(--muted);font-size:12px;">
+          ${stats.readers} reader${stats.readers === 1 ? "" : "s"} ·
+          ${formatBytes(stats.bytes_in)} in / ${formatBytes(stats.bytes_out)} out
+        </div>
+      </div>
+      <div class="spark-wrap" data-cam="${cam.id}">
+        ${sparkline(entry.in, entry.out, cam.id)}
+        <div class="tip"></div>
+      </div>
+    </div>`;
 }
 
 function render() {
@@ -366,19 +645,67 @@ function render() {
           ${field("ONVIF endpoint", runtime.onvif_url, true)}
           ${field("RTSP stream", runtime.rtsp_url, true)}
           ${field("Source", cam.source_url, true)}
-          ${field("Credentials", cam.require_auth ? cam.username + " / ••••••" : "none")}
-          ${field("Container", cam.container)}
+          ${field("Detected stream", detectedText(cam))}
+          ${field("Rate control", rateModeText(cam))}
         </div>
+        ${flowBlock(cam)}
       </div>`;
   }).join("");
+}
+
+function renderKpis() {
+  const active = cameras.filter((c) => c.enabled && ((c.runtime || {}).stats || {}).available);
+  const totalIn = active.reduce((sum, c) => sum + (c.runtime.stats.in_bps || 0), 0);
+  const totalOut = active.reduce((sum, c) => sum + (c.runtime.stats.out_bps || 0), 0);
+  const readers = active.reduce((sum, c) => sum + (c.runtime.stats.readers || 0), 0);
+
+  const totals = history.get("__total__") || { in: [], out: [] };
+  totals.in.push(totalIn);
+  totals.out.push(totalOut);
+  if (totals.in.length > HISTORY_LENGTH) totals.in.shift();
+  if (totals.out.length > HISTORY_LENGTH) totals.out.shift();
+  history.set("__total__", totals);
+
+  const running = cameras.filter((c) => (c.docker || {}).state === "running").length;
+
+  $("#kpis").innerHTML = `
+    <div class="kpi">
+      <div class="body">
+        <div class="label"><span class="swatch" style="background:var(--series-1)"></span>Total incoming</div>
+        <div class="figure">${formatBits(totalIn)}</div>
+        <div class="sub">pulled from the sources</div>
+      </div>
+      <div class="spark" style="width:110px">
+        <div class="spark-wrap" data-cam="__total_in__">${sparkline(totals.in, [], "__total_in__")}<div class="tip"></div></div>
+      </div>
+    </div>
+    <div class="kpi">
+      <div class="body">
+        <div class="label"><span class="swatch" style="background:var(--series-2)"></span>Total outgoing</div>
+        <div class="figure">${formatBits(totalOut)}</div>
+        <div class="sub">${readers} reader${readers === 1 ? "" : "s"} connected</div>
+      </div>
+      <div class="spark" style="width:110px">
+        <div class="spark-wrap" data-cam="__total_out__">${sparkline([], totals.out, "__total_out__")}<div class="tip"></div></div>
+      </div>
+    </div>
+    <div class="kpi">
+      <div class="body">
+        <div class="label">Cameras</div>
+        <div class="figure">${running} / ${cameras.length}</div>
+        <div class="sub">running</div>
+      </div>
+    </div>`;
 }
 
 async function refresh() {
   try {
     cameras = await api("/api/cameras");
+    cameras.forEach(recordSample);
+    renderKpis();
     render();
   } catch (err) {
-    toast(err.message, true);
+    if (!(err instanceof AuthError)) toast(err.message, true);
   }
 }
 
@@ -401,10 +728,65 @@ async function refreshStatus() {
     banner.hidden = !info.error;
     banner.textContent = info.error || "";
   } catch (err) {
+    if (err instanceof AuthError) return;
     $("#banner").hidden = false;
     $("#banner").textContent = err.message;
   }
 }
+
+// ----------------------------------------------------------- sparkline hover
+
+document.addEventListener("mousemove", (event) => {
+  const wrap = event.target.closest(".spark-wrap");
+  document.querySelectorAll(".tip.show").forEach((t) => {
+    if (!wrap || t.parentElement !== wrap) {
+      t.classList.remove("show");
+      const svg = t.parentElement.querySelector("svg");
+      if (svg) svg.querySelector(".cursor").setAttribute("opacity", "0");
+    }
+  });
+  if (!wrap) return;
+
+  const svg = wrap.querySelector("svg");
+  if (!svg) return;
+  const key = svg.dataset.spark;
+  const samples = Number(svg.dataset.samples || 0);
+  if (!samples) return;
+
+  const rect = wrap.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  const index = Math.round(ratio * (samples - 1));
+
+  let entry, showIn = true, showOut = true;
+  if (key === "__total_in__") { entry = history.get("__total__"); showOut = false; }
+  else if (key === "__total_out__") { entry = history.get("__total__"); showIn = false; }
+  else entry = history.get(key);
+  if (!entry) return;
+
+  const rows = [];
+  if (showIn && entry.in[index] != null) {
+    rows.push(`<div class="trow"><span class="swatch" style="background:var(--series-1)"></span>
+      In <span class="tval">${formatBits(entry.in[index])}</span></div>`);
+  }
+  if (showOut && entry.out[index] != null) {
+    rows.push(`<div class="trow"><span class="swatch" style="background:var(--series-2)"></span>
+      Out <span class="tval">${formatBits(entry.out[index])}</span></div>`);
+  }
+  if (!rows.length) return;
+
+  const tip = wrap.querySelector(".tip");
+  tip.innerHTML = rows.join("");
+  tip.classList.add("show");
+  const left = Math.min(rect.width - 110, Math.max(0, event.clientX - rect.left - 55));
+  tip.style.left = left + "px";
+  tip.style.bottom = "46px";
+
+  const cursor = svg.querySelector(".cursor");
+  const xPos = (index / Math.max(1, samples - 1)) * 300;
+  cursor.setAttribute("x1", xPos);
+  cursor.setAttribute("x2", xPos);
+  cursor.setAttribute("opacity", "0.5");
+});
 
 // --------------------------------------------------------------------- editing
 
@@ -470,11 +852,82 @@ $("#editForm").addEventListener("submit", async (event) => {
     $("#editDialog").close();
     await refresh();
   } catch (err) {
-    toast(err.message, true);
+    if (!(err instanceof AuthError)) toast(err.message, true);
   } finally {
     button.disabled = false;
   }
 });
+
+// ------------------------------------------------------------- backup/restore
+
+$("#backupBtn").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/backup");
+    if (!res.ok) throw new Error("Backup failed");
+    const blob = await res.blob();
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `onvif-bridge-backup-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast("Backup downloaded — it contains camera passwords, so store it safely.");
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+$("#restoreBtn").addEventListener("click", () => $("#restoreFile").click());
+
+$("#restoreFile").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    pendingBackup = JSON.parse(await file.text());
+  } catch {
+    toast("That file is not valid JSON.", true);
+    return;
+  }
+  const count = Array.isArray(pendingBackup)
+    ? pendingBackup.length
+    : (pendingBackup.cameras || []).length;
+  if (!count) { toast("No cameras found in that file.", true); return; }
+  $("#restoreSummary").textContent =
+    `${file.name} holds ${count} camera${count === 1 ? "" : "s"}. `
+    + `You currently have ${cameras.length}.`;
+  $("#restoreDialog").showModal();
+});
+
+$("#restoreCancel").addEventListener("click", () => {
+  pendingBackup = null;
+  $("#restoreDialog").close();
+});
+
+async function doRestore(replace) {
+  $("#restoreDialog").close();
+  if (!pendingBackup) return;
+  try {
+    const result = await api("/api/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup: pendingBackup, replace }),
+    });
+    toast(`Restored ${result.restored} camera(s), started ${result.started}.`);
+    (result.warnings || []).forEach((w) => toast(w, true));
+    await refresh();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message, true);
+  } finally {
+    pendingBackup = null;
+  }
+}
+
+$("#restoreReplace").addEventListener("click", () => doRestore(true));
+$("#restoreMerge").addEventListener("click", () => doRestore(false));
 
 // ------------------------------------------------------------------------ logs
 
@@ -518,9 +971,10 @@ $("#list").addEventListener("click", async (event) => {
     if (!confirm(`Delete "${cam.name}"? Its container will be removed.`)) return;
     try {
       await api(`/api/cameras/${id}`, { method: "DELETE" });
+      history.delete(id);
       toast("Camera deleted");
       await refresh();
-    } catch (err) { toast(err.message, true); }
+    } catch (err) { if (!(err instanceof AuthError)) toast(err.message, true); }
     return;
   }
 
@@ -529,7 +983,105 @@ $("#list").addEventListener("click", async (event) => {
     await api(`/api/cameras/${id}/${action}`, { method: "POST" });
     await refresh();
   } catch (err) {
-    toast(err.message, true);
+    if (!(err instanceof AuthError)) toast(err.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// --------------------------------------------------------------------- account
+
+$("#accountBtn").addEventListener("click", async () => {
+  const state = await api("/api/auth/state");
+  $("#accountWho").textContent = `Signed in as ${state.username}.`;
+  $("#accountDialog").showModal();
+});
+$("#accountCancel").addEventListener("click", () => $("#accountDialog").close());
+
+$("#signOutBtn").addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  $("#accountDialog").close();
+  showGate();
+});
+
+$("#accountForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/auth/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current: $("#a-current").value, new: $("#a-new").value }),
+    });
+    $("#accountForm").reset();
+    $("#accountDialog").close();
+    toast("Password changed");
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message, true);
+  }
+});
+
+// ------------------------------------------------------------ login / first run
+
+let gateMode = "login";
+
+function showGate() {
+  stopPolling();
+  $("#gate").hidden = false;
+  refreshGate();
+}
+
+async function refreshGate() {
+  let state = { configured: true, authenticated: false };
+  try {
+    state = await (await fetch("/api/auth/state")).json();
+  } catch { /* fall through to the login form */ }
+
+  if (state.authenticated) {
+    $("#gate").hidden = true;
+    startPolling();
+    return;
+  }
+  gateMode = state.configured ? "login" : "setup";
+  const setup = gateMode === "setup";
+  $("#gateTitle").textContent = setup ? "Set up access" : "Sign in";
+  $("#gateLead").textContent = setup
+    ? "Pick a username and password. They protect this management interface, not the cameras themselves."
+    : "Enter your credentials to manage the cameras.";
+  $("#gateSubmit").textContent = setup ? "Create account" : "Sign in";
+  $("#gateConfirmRow").hidden = !setup;
+  $("#gatePass").setAttribute("autocomplete", setup ? "new-password" : "current-password");
+  $("#gateError").textContent = "";
+  $("#gate").hidden = false;
+  $("#gateUser").focus();
+}
+
+$("#gateForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = $("#gateUser").value.trim();
+  const password = $("#gatePass").value;
+  const error = $("#gateError");
+  error.textContent = "";
+
+  if (gateMode === "setup" && password !== $("#gatePass2").value) {
+    error.textContent = "The two passwords do not match.";
+    return;
+  }
+  const button = $("#gateSubmit");
+  button.disabled = true;
+  try {
+    const res = await fetch(`/api/auth/${gateMode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { error.textContent = data.detail || "That did not work."; return; }
+    $("#gatePass").value = "";
+    $("#gatePass2").value = "";
+    $("#gate").hidden = true;
+    startPolling();
+  } catch (err) {
+    error.textContent = err.message;
   } finally {
     button.disabled = false;
   }
@@ -537,10 +1089,20 @@ $("#list").addEventListener("click", async (event) => {
 
 // -------------------------------------------------------------------- bootstrap
 
-refreshStatus();
-refresh();
-setInterval(refresh, 5000);
-setInterval(refreshStatus, 15000);
+function startPolling() {
+  stopPolling();
+  refreshStatus();
+  refresh();
+  timers.push(setInterval(refresh, 5000));
+  timers.push(setInterval(refreshStatus, 15000));
+}
+
+function stopPolling() {
+  timers.forEach(clearInterval);
+  timers = [];
+}
+
+refreshGate();
 </script>
 </body>
 </html>

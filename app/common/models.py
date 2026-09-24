@@ -37,6 +37,7 @@ DEFAULTS = {
     "fps_sub": 15,
     "bitrate_sub": 512,
     "snapshot_enabled": True,
+    "autodetect": True,
     "location": "any",
 }
 
@@ -63,6 +64,11 @@ def serial_for(cam_id: str) -> str:
     return hashlib.sha256(("serial:" + cam_id).encode()).hexdigest()[:12].upper()
 
 
+def uuid_for(cam_id: str) -> str:
+    """Stable ONVIF device UUID; a restored camera keeps its identity."""
+    return str(uuid.UUID(hashlib.sha1(cam_id.encode()).hexdigest()[:32]))
+
+
 def new_camera(payload: dict | None = None) -> dict:
     cam = dict(DEFAULTS)
     cam["id"] = uuid.uuid4().hex
@@ -71,7 +77,7 @@ def new_camera(payload: dict | None = None) -> dict:
         cam.update(sanitize(payload))
     cam["mac"] = generate_mac(cam["id"])
     cam["serial"] = serial_for(cam["id"])
-    cam["uuid"] = str(uuid.UUID(hashlib.sha1(cam["id"].encode()).hexdigest()[:32]))
+    cam["uuid"] = uuid_for(cam["id"])
     return cam
 
 
@@ -87,7 +93,7 @@ _INT_FIELDS = {
     "fps_sub",
     "bitrate_sub",
 }
-_BOOL_FIELDS = {"enabled", "require_auth", "proxy", "snapshot_enabled"}
+_BOOL_FIELDS = {"enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect"}
 _IMMUTABLE = {"id", "mac", "serial", "uuid", "created_at"}
 
 
@@ -152,6 +158,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "PROXY": "1" if cam["proxy"] else "0",
         "RTSP_TRANSPORT": cam.get("rtsp_transport") or "tcp",
         "SNAPSHOT": "1" if cam["snapshot_enabled"] else "0",
+        "AUTODETECT": "1" if cam.get("autodetect", True) else "0",
         "VIDEO_WIDTH": str(cam["width"]),
         "VIDEO_HEIGHT": str(cam["height"]),
         "VIDEO_FPS": str(cam["fps"]),

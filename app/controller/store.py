@@ -65,6 +65,22 @@ class CameraStore:
                     return cam
         return None
 
+    def replace_all(self, cameras: list[dict]):
+        with self._lock:
+            self._write(cameras)
+
+    def upsert(self, cam: dict):
+        """Insert or overwrite by id, keeping the stored order stable."""
+        with self._lock:
+            cameras = self._read()
+            for index, existing in enumerate(cameras):
+                if existing["id"] == cam["id"]:
+                    cameras[index] = cam
+                    break
+            else:
+                cameras.append(cam)
+            self._write(cameras)
+
     def delete(self, cam_id: str) -> bool:
         with self._lock:
             cameras = self._read()
