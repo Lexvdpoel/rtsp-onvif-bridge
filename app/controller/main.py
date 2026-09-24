@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,7 @@ from ..common import models
 from . import backup as backup_mod
 from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
 from .docker_mgr import DockerError, DockerManager
+from .hwdetect import HardwareDetector, summarize
 from .store import CameraStore
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -26,6 +28,7 @@ STATE_STALE_SECONDS = 45
 store = CameraStore(DATA_DIR)
 auth = AuthStore(DATA_DIR)
 manager: DockerManager | None = None
+detector: HardwareDetector | None = None
 startup_error: str = ""
 
 # Reachable before signing in: the page shell itself, and the endpoints the
@@ -42,7 +45,7 @@ PUBLIC_PATHS = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global manager, startup_error
+    global manager, detector, startup_error
     try:
         manager = DockerManager()
         manager.ensure_network()
@@ -50,8 +53,21 @@ async def lifespan(app: FastAPI):
         startup_error = str(exc)
         print(f"[controller] {exc}")
     else:
+        detector = HardwareDetector(manager.client, manager.image, DATA_DIR)
+        manager.detector = detector
+        # Detecting starts containers, so keep it off the startup path; cameras
+        # created before it finishes fall back to software encoding.
+        threading.Thread(target=_detect_hardware, name="hwdetect", daemon=True).start()
         _autostart()
     yield
+
+
+def _detect_hardware():
+    try:
+        report = detector.ensure()
+        print(f"[controller] hardware encoders: {summarize(report)}")
+    except Exception as exc:  # noqa: BLE001 - never fatal
+        print(f"[controller] hardware detection failed: {exc}")
 
 
 def _autostart():
@@ -205,6 +221,7 @@ def _decorate(cam: dict) -> dict:
     item["container"] = models.container_name(cam)
     item["runtime"] = _runtime_state(cam["id"])
     if manager is not None:
+        item["resolved_hwaccel"] = manager.resolved_hwaccel(cam)
         try:
             item["docker"] = manager.status(cam)
         except Exception as exc:  # noqa: BLE001
@@ -346,6 +363,28 @@ async def camera_password(cam_id: str):
     """Returned only on explicit request, so the list view stays free of secrets."""
     cam = _get_or_404(cam_id)
     return {"password": cam.get("password", "")}
+
+
+@app.get("/api/hwaccel")
+async def hwaccel_state():
+    if detector is None:
+        return {"detected_at": 0, "summary": "Docker unavailable", "available": {}}
+    report = dict(detector.cached())
+    report["summary"] = summarize(report)
+    return report
+
+
+@app.post("/api/hwaccel/detect")
+async def hwaccel_detect():
+    """Re-run the probe; the host's hardware or the image may have changed."""
+    if detector is None:
+        raise HTTPException(status_code=503, detail="Docker is not available.")
+    try:
+        report = dict(detector.detect())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    report["summary"] = summarize(report)
+    return report
 
 
 @app.get("/api/backup")

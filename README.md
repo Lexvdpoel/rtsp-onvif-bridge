@@ -41,7 +41,8 @@ RTSP-bronnen ──────────┼─ onvif-cam-c3d4  MAC 02:1f:… 
    volgt de werkelijke in- en uitgaande bitrate per camera.
 8. **Codec-conversie** — je kiest per camera welke codec de NVR krijgt. Wijkt de
    bron daarvan af, dan wordt er met ffmpeg omgezet; komt hij al overeen, dan
-   gebeurt er niets.
+   gebeurt er niets. Welke hardware-encoder daarvoor beschikbaar is zoekt de
+   bridge zelf uit.
 
 ## Vereisten
 
@@ -216,20 +217,33 @@ Kan de bron niet gelezen worden bij het opstarten, dan wordt er omgezet in plaat
 van gegokt: je hebt expliciet om een codec gevraagd, en die krijgen weegt zwaarder
 dan de CPU die misschien niet nodig was.
 
-### Dit kost CPU
+### Hardware-encoding wordt zelf gevonden
 
-Software-H.265 van een 4MP-stream vult zonder meer een paar cores per camera. Voor
-meer dan één of twee camera's wil je hardware:
+De encoder staat standaard op **Automatic**. Bij de eerste start kijkt de bridge
+zelf wat deze host kan en kiest dat; je hoeft niets in te vullen.
 
-| Encoder | Nodig op de host |
-|---|---|
-| **VA-API** | Intel- of AMD-iGPU met `/dev/dri`. Op Unraid met een Intel-CPU is dit meestal de juiste keuze. |
-| **Quick Sync** | Idem, Intel-specifiek pad. |
-| **NVENC** | NVIDIA-GPU plus de NVIDIA container runtime. |
+Die detectie raadt niet. Dat een encoder in ffmpeg zit, betekent nog niet dat deze
+machine hem kan draaien — een oudere Intel-iGPU noemt `hevc_vaapi` wel, maar kan
+H.265 alleen decoden. Daarom wordt elke kandidaat beslist met een échte
+test-encode van vijf frames, in een wegwerp-container met hetzelfde ffmpeg en het
+juiste device eraan. Komt die schoon terug, dan werkt hij.
 
-Het device wordt automatisch aan de camera-container meegegeven zodra je een
-hardware-encoder kiest; in Copy-modus gebeurt dat niet. Controleer of je host het
-kan met `ls -l /dev/dri` — zie je `renderD128`, dan zit je goed.
+Het resultaat staat in de badge **GPU:** bovenin. Klik erop om opnieuw te
+detecteren, bijvoorbeeld nadat je een GPU hebt toegevoegd. Beweeg erover voor
+waarom iets niet beschikbaar is.
+
+De keuze wordt per codec gemaakt: kan je iGPU wel H.264 maar geen H.265 encoden,
+dan gebruikt een H.264-camera de iGPU en valt een H.265-camera terug op software.
+
+| Encoder | Nodig op de host | Voorkeur |
+|---|---|---|
+| **VA-API** | Intel- of AMD-iGPU met `/dev/dri` | eerst — breedst inzetbaar, geen limiet op het aantal gelijktijdige streams |
+| **Quick Sync** | Idem, Intel-specifiek pad | tweede |
+| **NVENC** | NVIDIA-GPU plus de NVIDIA container runtime | laatst — consumentenkaarten beperken het aantal gelijktijdige encode-sessies, wat gaat knellen zodra meerdere camera's tegelijk omzetten |
+
+Wil je het zelf bepalen, kies dan een encoder uit de lijst; die keuze wordt niet
+overruled. Het device wordt alleen aan de camera-container meegegeven als er
+werkelijk mee geëncodeerd wordt — in Copy-modus gebeurt dat niet.
 
 Blijft het beeld zwart na het omzetten, zet dan **Audio** op *Drop*. Niet elke
 camera-audio laat zich in RTSP hermuxen, en dan faalt het hele commando.
@@ -297,7 +311,8 @@ Klik **Logs** op een camerakaart — de meeste antwoorden staan daar.
 | Snapshot geeft 503 | ffmpeg kreeg geen frame binnen 15 seconden — meestal dezelfde oorzaak als hierboven. |
 | Beeld zwart na het kiezen van een codec | De audio van de bron laat zich niet in RTSP hermuxen. Zet **Audio** op *Drop* en herstart de camera. |
 | CPU loopt vol na het kiezen van een codec | Software-encoding. Kies een hardware-encoder, of zet de codec terug op Copy als de NVR de bron-codec toch aankan. |
-| `Cannot load libva` of de encoder start niet | De gekozen hardware-encoder is er niet. Controleer `/dev/dri` op de host en of je CPU de codec kan encoden — oudere Intel-iGPU's kunnen H.265 wel decoden maar niet encoden. |
+| Badge zegt `GPU: software only` | Er is geen werkende hardware-encoder gevonden. Beweeg over de badge voor de reden per encoder. Meestal ontbreekt `/dev/dri` op de host, of kan de iGPU de gevraagde codec niet encoden. |
+| `Cannot load libva` of de encoder start niet | Je hebt handmatig een encoder gekozen die het niet doet. Zet hem op **Automatic**, of klik de GPU-badge aan om opnieuw te detecteren. |
 | Bitrate blijft op nul staan | De relay staat uit voor die camera, of hij is nog niet gestart. Zonder relay loopt het verkeer niet door de container en valt er niets te meten. |
 | Detectie blijft op `probing…` | ffprobe komt niet bij de bron. Kijk in de logs naar de regel die met `[probe]` begint; meestal klopt de RTSP-URL of het transport niet. |
 | Wachtwoord van de UI kwijt | Verwijder `data/auth.json` en herstart de controller; hij vraagt dan opnieuw om een account. |
@@ -325,6 +340,8 @@ camera-container (of in `docker-compose.yml`, waarna je de camera's herstart).
 | [app/camera/probe.py](app/camera/probe.py) | ffprobe-detectie van de bronstream |
 | [app/camera/stats.py](app/camera/stats.py) | doorvoermeting en CBR/VBR-afleiding |
 | [app/camera/transcode.py](app/camera/transcode.py) | codec-beslissing en ffmpeg-commando |
+| [app/camera/hwprobe.py](app/camera/hwprobe.py) | test-encode per hardware-encoder |
+| [app/controller/hwdetect.py](app/controller/hwdetect.py) | draait de probe, cachet en kiest |
 | [app/common/models.py](app/common/models.py) | cameramodel, MAC-generatie, validatie |
 
 Eén image, twee rollen: `ROLE=controller` start de web-UI, `ROLE=camera` start een

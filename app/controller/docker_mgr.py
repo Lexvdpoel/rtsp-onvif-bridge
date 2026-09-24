@@ -44,6 +44,8 @@ class DockerManager:
         self.ip_range = os.environ.get("MACVLAN_IP_RANGE", "").strip()
         self.ipam_mode = os.environ.get("MACVLAN_IPAM", "").strip().lower()
         self.state_dir = os.environ.get("STATE_DIR", "/state")
+        # Set by the controller once it has a hardware report to consult.
+        self.detector = None
         try:
             self.client = docker.from_env()
         except Exception as exc:  # noqa: BLE001 - surfaced in the UI
@@ -159,13 +161,18 @@ class DockerManager:
             ) from exc
 
         source = self._state_mount_source()
-        extra = self._hwaccel_access(cam)
+        hwaccel = self.resolved_hwaccel(cam)
+        extra = self._hwaccel_access(cam, hwaccel)
+        environment = models.env_for(cam, self.state_dir)
+        # "auto" is settled here, where the hardware report is available; the
+        # camera container only ever sees a concrete encoder.
+        environment["HWACCEL"] = hwaccel
         try:
             container = self.client.containers.create(
                 image=self.image,
                 name=models.container_name(cam),
                 hostname=models.hostname_for(cam),
-                environment=models.env_for(cam, self.state_dir),
+                environment=environment,
                 network=self.network_name,
                 mac_address=cam["mac"],
                 cap_add=["NET_ADMIN", "NET_RAW"],
@@ -182,11 +189,18 @@ class DockerManager:
             ) from exc
         return container
 
+    def resolved_hwaccel(self, cam: dict) -> str:
+        """The concrete encoder this camera will use."""
+        if self.detector is not None:
+            return self.detector.resolve(cam)
+        requested = cam.get("hwaccel", "auto")
+        # Without a hardware report there is nothing to choose from.
+        return "none" if requested == "auto" else requested
+
     @staticmethod
-    def _hwaccel_access(cam: dict) -> dict:
+    def _hwaccel_access(cam: dict, hwaccel: str) -> dict:
         """Give the container the GPU it needs, and only when it needs one."""
-        hwaccel = cam.get("hwaccel", "none")
-        if cam.get("output_codec") in (None, "", "copy") or hwaccel == "none":
+        if cam.get("output_codec") in (None, "", "copy") or hwaccel in ("none", "auto"):
             return {}
         if hwaccel in ("vaapi", "qsv"):
             # Intel and AMD render nodes live here.

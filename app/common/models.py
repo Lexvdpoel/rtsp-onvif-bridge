@@ -28,7 +28,7 @@ DEFAULTS = {
     # Codec handed to the NVR. "copy" relays whatever the source sends; h264 or
     # h265 re-encode only when the source is not already that codec.
     "output_codec": "copy",
-    "hwaccel": "none",
+    "hwaccel": "auto",
     "encode_bitrate": 4096,
     "encode_preset": "veryfast",
     "audio": "copy",
@@ -140,8 +140,8 @@ def validate(cam: dict) -> list[str]:
         errors.append("A password is required when authentication is enabled.")
     if cam.get("output_codec") not in ("copy", "h264", "h265"):
         errors.append("Output codec must be copy, h264 or h265.")
-    if cam.get("hwaccel") not in ("none", "vaapi", "qsv", "nvenc"):
-        errors.append("Hardware acceleration must be none, vaapi, qsv or nvenc.")
+    if cam.get("hwaccel") not in ("auto", "none", "vaapi", "qsv", "nvenc"):
+        errors.append("Encoder must be auto, none, vaapi, qsv or nvenc.")
     if cam.get("audio") not in ("copy", "none"):
         errors.append("Audio must be copy or none.")
     if not 64 <= int(cam.get("encode_bitrate", 4096)) <= 100000:
@@ -174,7 +174,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "PROXY": "1" if cam["proxy"] else "0",
         "RTSP_TRANSPORT": cam.get("rtsp_transport") or "tcp",
         "OUTPUT_CODEC": cam.get("output_codec") or "copy",
-        "HWACCEL": cam.get("hwaccel") or "none",
+        "HWACCEL": cam.get("hwaccel") or "auto",
         "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),
         "ENCODE_PRESET": cam.get("encode_preset") or "veryfast",
         "AUDIO": cam.get("audio") or "copy",

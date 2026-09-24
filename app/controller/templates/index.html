@@ -54,6 +54,8 @@
   header .spacer { flex: 1; }
   main { padding: 20px 24px 40px; max-width: 1180px; margin: 0 auto; }
 
+  .pill#gpuPill { cursor: pointer; }
+  .pill#gpuPill:hover { border-color: var(--accent); }
   .pill {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 12px; padding: 3px 9px; border-radius: 999px;
@@ -232,6 +234,8 @@
   <h1>RTSP &rarr; ONVIF bridge</h1>
   <span class="pill" id="dockerPill"><span class="dot"></span><span>checking…</span></span>
   <span class="pill" id="netPill"><span class="dot"></span><span>network</span></span>
+  <span class="pill" id="gpuPill" role="button" tabindex="0"
+        title="Click to detect again"><span class="dot"></span><span>GPU…</span></span>
   <div class="spacer"></div>
   <button id="backupBtn">Backup</button>
   <button id="restoreBtn">Restore</button>
@@ -346,6 +350,7 @@
           <div>
             <label for="f-hwaccel">Encoder</label>
             <select id="f-hwaccel" name="hwaccel">
+              <option value="auto">Automatic — use what the host has</option>
               <option value="none">Software (libx264 / libx265)</option>
               <option value="vaapi">VA-API — Intel or AMD iGPU</option>
               <option value="qsv">Intel Quick Sync</option>
@@ -378,9 +383,9 @@
             Re-encoding only happens when the source is not already the codec you picked, so
             choosing H.264 for an H.264 camera still costs nothing. A real transcode is expensive:
             software H.265 of a 4 MP stream will occupy several CPU cores per camera. Pick a
-            hardware encoder if your host has one — VA-API and Quick Sync need
-            <code>/dev/dri</code> on the host, NVENC needs the NVIDIA container runtime; the
-            device is passed in automatically. If the stream stays black after switching, drop
+            hardware encoder if your host has one. On <em>Automatic</em> the bridge uses whatever
+            it detected on this host (shown in the GPU badge at the top) and falls back to
+            software if there is nothing; the right device is passed into the container for you. If the stream stays black after switching, drop
             the audio: not every camera's audio can be carried into RTSP.
           </div>
         </div>
@@ -632,6 +637,14 @@ function outputText(cam) {
   return `${String(cam.output_codec || "").toUpperCase()} (pending)`;
 }
 
+function encoderText(cam) {
+  if (cam.output_codec === "copy") return "not used (no re-encode)";
+  const resolved = cam.resolved_hwaccel || cam.hwaccel;
+  const names = { none: "software", vaapi: "VA-API", qsv: "Quick Sync", nvenc: "NVENC" };
+  const label = names[resolved] || resolved;
+  return cam.hwaccel === "auto" ? `${label} (chosen automatically)` : label;
+}
+
 function rateModeText(cam) {
   const stats = (cam.runtime || {}).stats || {};
   if (!stats.rate_mode) return "measuring…";
@@ -713,6 +726,7 @@ function render() {
           ${field("Source", cam.source_url, true)}
           ${field("Detected stream", detectedText(cam))}
           ${field("Output", outputText(cam))}
+          ${field("Encoder", encoderText(cam))}
           ${field("Rate control", rateModeText(cam))}
         </div>
         ${flowBlock(cam)}
@@ -800,6 +814,55 @@ async function refreshStatus() {
     $("#banner").textContent = err.message;
   }
 }
+
+// ------------------------------------------------------- hardware detection
+
+function renderGpuPill(info) {
+  const pill = $("#gpuPill");
+  const summary = (info && info.summary) || "unknown";
+  const none = summary === "software only" || summary === "not detected yet";
+  pill.querySelector(".dot").className = "dot " + (none ? "warn" : "ok");
+  pill.querySelector("span:last-child").textContent = "GPU: " + summary;
+
+  const errors = Object.entries((info && info.errors) || {})
+    .filter(([, message]) => message)
+    .map(([family, message]) => `${family}: ${message}`);
+  const nodes = ((info && info.details) || {}).render_nodes || [];
+  pill.title = [
+    errors.length ? errors.join("
+") : "All probed encoders work.",
+    nodes.length ? "Render nodes: " + nodes.join(", ") : "No render node found.",
+    "Click to detect again.",
+  ].join("
+");
+}
+
+async function refreshHardware() {
+  try {
+    renderGpuPill(await api("/api/hwaccel"));
+  } catch (err) {
+    if (!(err instanceof AuthError)) renderGpuPill({ summary: "unavailable" });
+  }
+}
+
+async function detectHardware() {
+  const pill = $("#gpuPill");
+  pill.querySelector("span:last-child").textContent = "GPU: detecting…";
+  try {
+    const info = await api("/api/hwaccel/detect", { method: "POST" });
+    renderGpuPill(info);
+    toast("Hardware detection finished: " + info.summary);
+    await refresh();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message, true);
+    await refreshHardware();
+  }
+}
+
+$("#gpuPill").addEventListener("click", detectHardware);
+$("#gpuPill").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") { event.preventDefault(); detectHardware(); }
+});
 
 // ----------------------------------------------------------- sparkline hover
 
@@ -1159,6 +1222,7 @@ $("#gateForm").addEventListener("submit", async (event) => {
 function startPolling() {
   stopPolling();
   refreshStatus();
+  refreshHardware();
   refresh();
   timers.push(setInterval(refresh, 5000));
   timers.push(setInterval(refreshStatus, 15000));
