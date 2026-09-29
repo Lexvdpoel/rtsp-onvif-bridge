@@ -68,6 +68,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # this project never uses pulls them in, and while the failed import is not fatal
 # it prints an ImportError on every start that reads like a fault.
 #
+# websockets is pinned for the same class of reason. The proxy asks for
+# >=9.0.1, but 14.0 made the new asyncio client the default: extra_headers
+# became additional_headers and InvalidStatusCode became InvalidStatus. The
+# proxy uses both of the old names, so an unpinned install builds fine and then
+# dies with a TypeError the moment it dials the console. The build asserts the
+# pin still buys what it is for, so the day upstream moves on, this says so
+# instead of quietly holding an old version forever.
+#
 # The install is allowed to fail. It is an opt-in feature, the upstream project
 # pins nothing and pulls one dependency straight from a branch archive, so a
 # break there should not cost everyone else their image. A camera set to UniFi
@@ -80,6 +88,7 @@ RUN set -eu; \
         "https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/${UNIFI_CAM_PROXY_REF}/requirements.txt"; \
     then \
         sed -i '/^pyunifiprotect/d' /tmp/ucp-requirements.txt; \
+        sed -i 's/^websockets.*/websockets==13.1/' /tmp/ucp-requirements.txt; \
         echo "uiprotect" >> /tmp/ucp-requirements.txt; \
         echo "pillow" >> /tmp/ucp-requirements.txt; \
         echo "opencv-python-headless" >> /tmp/ucp-requirements.txt; \
@@ -98,6 +107,7 @@ RUN set -eu; \
             'from uiprotect import ProtectApiClient  # noqa: F401' \
             > "$(/opt/unifi-venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pyunifiprotect.py"; \
         /opt/unifi-venv/bin/python -c 'import unifi.main; print("unifi-cam-proxy imports cleanly")'; \
+        /opt/unifi-venv/bin/python -c 'import inspect, websockets; assert "extra_headers" in inspect.signature(websockets.connect).parameters; assert hasattr(websockets.exceptions, "InvalidStatusCode"); print("websockets", websockets.__version__, "still speaks the proxy dialect")'; \
         echo "unifi-cam-proxy installed at ${UNIFI_CAM_PROXY_REF}"; \
     else \
         echo "WARNING: unifi-cam-proxy could not be installed; UniFi mode will be unavailable"; \
