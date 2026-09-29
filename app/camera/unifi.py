@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import tempfile
 
+from . import unifi_models
+
 # unifi-cam-proxy lives in its own virtualenv; see the Dockerfile for why it
 # cannot share the main environment.
 VENV_PYTHON = os.environ.get("UNIFI_VENV_PYTHON", "/opt/unifi-venv/bin/python")
@@ -96,6 +98,19 @@ def build_args(cfg, state, cert: str, stream_url: str,
     adoption_token = token or cfg.unifi_token
     if adoption_token:
         args += ["--token", adoption_token]
+
+    # Identify the camera the same way discovery does, so Protect sees one
+    # consistent device rather than two halves disagreeing.
+    args += ["--name", cfg.name]
+    identity = unifi_models.identity(cfg.unifi_model)
+    if identity["proxy_name"]:
+        args += ["--model", identity["proxy_name"]]
+    if cfg.unifi_firmware:
+        args += ["--fw-version", cfg.unifi_firmware]
+    address = getattr(state, "ip", "")
+    if address:
+        args += ["--ip", address]
+
     if cfg.unifi_extra_args:
         args += shlex.split(cfg.unifi_extra_args)
     args += ["rtsp", "-s", stream_url]

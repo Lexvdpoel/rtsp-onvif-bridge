@@ -314,7 +314,12 @@
           <div class="wide">
             <label for="f-unifi-extra">Extra proxy arguments (optional)</label>
             <input type="text" id="f-unifi-extra" name="unifi_extra_args"
-                   placeholder="--name &quot;Front door&quot;">
+                   placeholder="--verbose">
+            <div class="hint">
+              Flags only, passed through unchanged. The name, model, firmware and IP are
+              already sent for you, so there is normally nothing to put here. A bare word
+              rather than a flag will be read as a command and the proxy will refuse to start.
+            </div>
           </div>
           <div class="wide hint">
             The address and token appear below only when discovery is off. Recent

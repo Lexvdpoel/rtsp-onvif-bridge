@@ -40,6 +40,28 @@ MODELS: dict[str, tuple[str, str]] = {
     "UVC_G6_TURRET": ("sav539g", "0xa601"),
 }
 
+# What unifi-cam-proxy calls each model on its --model flag. Its list is
+# shorter than the one above, and a name it does not know is rejected outright,
+# so a model without an entry here is not offered as a choice.
+PROXY_NAMES = {
+    "UVC_G3": "UVC G3",
+    "UVC_G3_DOME": "UVC G3 Dome",
+    "UVC_G3_FLEX": "UVC G3 Flex",
+    "UVC_G3_MICRO": "UVC G3 Micro",
+    "UVC_G3_INSTANT": "UVC G3 Instant",
+    "UVC_G3_PRO": "UVC G3 Pro",
+    "UVC_G4_BULLET": "UVC G4 Bullet",
+    "UVC_G4_DOME": "UVC G4 Dome",
+    "UVC_G4_PRO": "UVC G4 Pro",
+    "UVC_G4_PTZ": "UVC G4 PTZ",
+    "UVC_G4_INSTANT": "UVC G4 Instant",
+    "UVC_G4_DOORBELL": "UVC G4 Doorbell",
+    "UVC_G5_BULLET": "UVC G5 Bullet",
+    "UVC_G5_DOME": "UVC G5 Dome",
+    "UVC_G5_FLEX": "UVC G5 Flex",
+    "UVC_G5_PRO": "UVC G5 Pro",
+}
+
 DEFAULT_MODEL = "UVC_G4_BULLET"
 DEFAULT_FIRMWARE = "4.71.0"
 
@@ -55,8 +77,11 @@ def identity(model: str) -> dict:
         "platform": platform,
         "sysid": sysid,
         "display": name.replace("UVC_", "").replace("_", " ").title(),
+        "proxy_name": PROXY_NAMES.get(name, ""),
     }
 
 
 def choices() -> list[str]:
-    return sorted(MODELS)
+    """Models that both halves understand: discovery announces it and the proxy
+    accepts it. Offering one the proxy rejects would only fail at startup."""
+    return sorted(set(MODELS) & set(PROXY_NAMES))
