@@ -291,11 +291,17 @@
                    placeholder="--name &quot;Front door&quot;">
           </div>
           <div class="wide hint">
-            Get the token from Protect under <em>Devices &rarr; Add Devices &rarr; Third-party
-            camera</em>; it is valid for 60 minutes and is only needed the first time. After
-            adoption the camera is recognised by a client certificate, which is generated here
-            and kept with the camera's state — so it stays adopted across restarts, and deleting
-            the camera means adopting it again.
+            Recent Protect versions no longer show a token on the advanced adoption screen.
+            Sign in to your console in a browser <strong>with your Ubiquiti cloud account</strong>
+            — a local-only account returns an authentication error — then open
+            <code>https://&lt;console&gt;/proxy/protect/api/cameras/manage-payload</code> and copy
+            the <code>token</code> from the response. It is valid for 60 minutes and only needed
+            the first time. After adoption the camera is recognised by a client certificate,
+            generated here and kept with the camera's state, so it stays adopted across restarts;
+            deleting the camera means adopting it again.
+            <br><br>
+            The console address is pre-filled from the bridge's <code>UNIFI_HOST</code> setting
+            when there is one; change it here for a camera that talks to a different console.
           </div>
         </div>
       </fieldset>
@@ -595,6 +601,7 @@ let cameras = [];
 let editingId = null;
 let logCameraId = null;
 let pendingBackup = null;
+let serverDefaults = {};
 let timers = [];
 
 // Client-side throughput history, keyed by camera id. The API reports an
@@ -911,6 +918,8 @@ async function refreshStatus() {
     netPill.querySelector("span:last-child").textContent =
       netOk ? `${net.name} on ${net.parent || "?"}` : "network not ready";
 
+    serverDefaults = info.defaults || {};
+
     const banner = $("#banner");
     banner.hidden = !info.error;
     banner.textContent = info.error || "";
@@ -1050,6 +1059,10 @@ async function openEdit(cam) {
   editingId = cam ? cam.id : null;
   $("#editTitle").textContent = cam ? "Edit camera" : "Add camera";
   fillForm(cam);
+  // Set once centrally rather than typed per camera.
+  if (!$("#f-unifi-host").value && serverDefaults.unifi_host) {
+    $("#f-unifi-host").value = serverDefaults.unifi_host;
+  }
   applyMode();
   if (cam) {
     try {

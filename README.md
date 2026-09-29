@@ -298,10 +298,38 @@ still apply: the proxy reads from the local relay.
 
 ### Adopting a camera into Protect
 
-1. Set the mode to **UniFi Protect** and fill in your console's address.
-2. Get a token in Protect under **Devices → Add Devices → Third-party camera**.
-   It is valid for 60 minutes.
-3. Paste the token into the form and save.
+1. Set the mode to **UniFi Protect**. The console address is pre-filled from the
+   `UNIFI_HOST` setting; override it per camera if one talks to a different
+   console.
+2. Get an adoption token. Recent Protect versions no longer offer one on the
+   advanced adoption screen. Sign in to the console in a browser **with your
+   Ubiquiti cloud account** — a local-only account returns an authentication
+   error — and then open:
+
+   ```
+   https://<console>/proxy/protect/api/cameras/manage-payload
+   ```
+
+   The response contains the token, along with the management host the camera
+   will connect to:
+
+   ```json
+   {"wifi":{...},"mgmt":{"protocol":"wss","hosts":["10.0.0.1:7442"],"token":"…"}}
+   ```
+
+3. Paste the token into the form and save. It is valid for 60 minutes.
+
+### Why a token at all
+
+A factory UniFi camera announces itself on the LAN and Protect pushes the
+adoption to it. This works the other way round: the proxy dials out to the
+console and identifies itself with the token and a certificate. There is no
+discovery or inform code in `unifi-cam-proxy` — the camera cannot make itself
+appear in the adoption list the way a real one does, so the token is the way in.
+
+Making it announce itself would mean reverse-engineering both the discovery
+broadcast and the inbound adoption handshake. That is a separate project, not a
+setting.
 
 The token is only needed the first time. After that Protect recognises the camera
 by a client certificate, which the bridge generates itself — you do not have to

@@ -112,6 +112,9 @@ class DockerManager:
         self.ip_range = os.environ.get("MACVLAN_IP_RANGE", "").strip()
         self.ipam_mode = os.environ.get("MACVLAN_IPAM", "").strip().lower()
         self.state_dir = os.environ.get("STATE_DIR", "/state")
+        # Address of the Protect console, used by any camera that does not name
+        # one of its own.
+        self.default_unifi_host = os.environ.get("UNIFI_HOST", "").strip()
         # Set by the controller once it has a hardware report to consult.
         self.detector = None
         try:
@@ -239,6 +242,8 @@ class DockerManager:
         # "auto" is settled here, where the hardware report is available; the
         # camera container only ever sees a concrete encoder.
         environment["HWACCEL"] = hwaccel
+        if not environment.get("UNIFI_HOST"):
+            environment["UNIFI_HOST"] = self.default_unifi_host
         try:
             container = self.client.containers.create(
                 image=self.image,

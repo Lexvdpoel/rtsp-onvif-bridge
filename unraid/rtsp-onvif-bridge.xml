@@ -57,6 +57,10 @@
           Description="Host interface the virtual cameras hang off. Usually br0 on Unraid; check with: ip -br link"
           Type="Variable" Display="always" Required="true" Mask="false">br0</Config>
 
+  <Config Name="UniFi Protect console (UNIFI_HOST)" Target="UNIFI_HOST" Default=""
+          Description="Only needed for cameras set to UniFi mode. Pre-fills the console address so you do not type it per camera."
+          Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
   <Config Name="Role" Target="ROLE" Default="controller"
           Description="Leave on controller. The same image also runs the camera role, which the controller starts itself."
           Type="Variable" Display="advanced" Required="true" Mask="false">controller</Config>

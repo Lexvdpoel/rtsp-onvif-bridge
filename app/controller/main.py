@@ -232,6 +232,15 @@ def _decorate(cam: dict) -> dict:
     return item
 
 
+def _with_defaults(payload: dict) -> dict:
+    """Fill in settings the operator set once, centrally, rather than per camera."""
+    payload = dict(payload)
+    if payload.get("mode") == "unifi" and not (payload.get("unifi_host") or "").strip():
+        if manager is not None and manager.default_unifi_host:
+            payload["unifi_host"] = manager.default_unifi_host
+    return payload
+
+
 def _get_or_404(cam_id: str) -> dict:
     cam = store.get(cam_id)
     if cam is None:
@@ -262,6 +271,7 @@ def status():
             "parent": manager.parent,
             "subnet": manager.subnet,
         }
+        info["defaults"] = {"unifi_host": manager.default_unifi_host}
         try:
             info["network"].update(manager.ensure_network())
         except DockerError as exc:
@@ -276,7 +286,7 @@ def list_cameras():
 
 @app.post("/api/cameras")
 async def create_camera(request: Request):
-    payload = await request.json()
+    payload = _with_defaults(await request.json())
     draft = dict(models.DEFAULTS)
     draft.update(models.sanitize(payload))
     errors = models.validate(draft)
@@ -303,7 +313,7 @@ def _create_camera_sync(payload: dict):
 @app.put("/api/cameras/{cam_id}")
 async def update_camera(cam_id: str, request: Request):
     cam = _get_or_404(cam_id)
-    payload = await request.json()
+    payload = _with_defaults(await request.json())
 
     draft = dict(cam)
     draft.update(models.sanitize(payload))

@@ -18,6 +18,8 @@ services:
       MACVLAN_GATEWAY: ${MACVLAN_GATEWAY:-}
       MACVLAN_IP_RANGE: ${MACVLAN_IP_RANGE:-}
       STATE_DIR: /state
+      # Protect console address, used by any camera that names none itself.
+      UNIFI_HOST: ${UNIFI_HOST:-}
       # Point at a host path instead if Unraid cannot fetch the URL.
       UNRAID_ICON: ${UNRAID_ICON:-}
       DATA_DIR: /data
