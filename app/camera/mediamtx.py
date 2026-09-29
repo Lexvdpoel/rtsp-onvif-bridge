@@ -52,6 +52,25 @@ def write_transcode_script(name: str, args: list[str], script_builder) -> str:
     return path
 
 
+def _server_transports(transport: str) -> str:
+    """What the relay offers to whoever reads from it.
+
+    MediaMTX defaults to offering UDP, multicast and TCP, and lets the client
+    pick. Forcing TCP towards the source while the relay still hands out UDP is
+    a half-measure: on a routed network the UDP leg is the one that drops, and
+    it drops as stalled live view rather than as an error. So the setting
+    applies to both ends, and the UDP listeners are not opened at all when TCP
+    is chosen -- the relay's own startup line then says which it is.
+    """
+    if (transport or "tcp").lower() == "udp":
+        return (
+            "protocols: [udp, tcp]\n"
+            "rtpAddress: :8000\n"
+            "rtcpAddress: :8001\n"
+        )
+    return "protocols: [tcp]\n"
+
+
 def write_config(paths: dict[str, dict], rtsp_port: int, transport: str = "tcp") -> str:
     """`paths` maps a path name onto either {'source': url} or {'script': path}."""
     blocks = ""
@@ -78,9 +97,8 @@ def write_config(paths: dict[str, dict], rtsp_port: int, transport: str = "tcp")
         "srt: no\n"
         "rtsp: yes\n"
         f"rtspAddress: :{rtsp_port}\n"
-        "rtpAddress: :8000\n"
-        "rtcpAddress: :8001\n"
-        "paths:\n" + blocks
+        + _server_transports(transport)
+        + "paths:\n" + blocks
     )
     with open(CONFIG_PATH, "w") as fh:
         fh.write(config)

@@ -414,11 +414,16 @@
             <label for="f-proxy" style="margin:0">Relay the stream through this camera's IP</label>
           </div>
           <div>
-            <label for="f-transport">RTSP transport to source</label>
+            <label for="f-transport">RTSP transport</label>
             <select id="f-transport" name="rtsp_transport">
               <option value="tcp">TCP</option>
               <option value="udp">UDP</option>
             </select>
+            <div class="hint">
+              Applies both ways: how this camera reads its source, and what the relay
+              offers whoever reads from it. TCP opens no UDP listener at all, which is
+              what you want when the stream crosses a router.
+            </div>
           </div>
           <div class="wide hint">
             With the relay on, the NVR only ever talks to the virtual camera, and the throughput
