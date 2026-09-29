@@ -268,6 +268,22 @@ ONVIF-endpoint en de RTSP-URL. Klik op een waarde om die te kopiëren.
 Geef in je DHCP-server een reservering op het getoonde MAC-adres. Dat MAC ligt
 vast zolang de camera bestaat, ook na een rebuild of een herstart van de host.
 
+Het virtuele MAC wordt afgeleid van wat de camera *identificeert*, niet van een
+willekeurig nummer. Verwijder je een camera en voeg je hem later opnieuw toe, dan
+krijgt hij hetzelfde adres terug en blijft je reservering kloppen.
+
+| Wat je invult | Waar het MAC van afhangt |
+|---|---|
+| **MAC van de echte camera** (aanbevolen) | Alleen dat MAC. De bron mag van IP veranderen, van wachtwoord, van pad — het virtuele MAC blijft. |
+| Niets | Host en pad uit de bron-URL. Een wachtwoordwijziging verandert niets; een ander IP wel. |
+
+Vul het echte MAC in op het moment dat je de camera toevoegt. Het virtuele MAC
+wordt bij het aanmaken vastgelegd en daarna niet meer herberekend, juist om te
+voorkomen dat een bewerking stilletjes je reservering breekt.
+
+Wijzen twee camera's naar dezelfde bron, dan krijgt de tweede automatisch een
+afwijkend MAC: twee kaarten met hetzelfde adres op één LAN werken allebei niet.
+
 ## UniFi Protect
 
 1. Zorg dat de Docker-host en de UniFi-console op hetzelfde netwerk zitten.

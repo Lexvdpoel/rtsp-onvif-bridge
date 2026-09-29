@@ -6,6 +6,7 @@ import hashlib
 import re
 import time
 import uuid
+from urllib.parse import urlsplit
 
 # Locally administered, unicast OUI prefix. Kept away from Docker's own 02:42
 # range so camera MACs are easy to spot in the DHCP server's lease table.
@@ -17,6 +18,9 @@ DEFAULTS = {
     "name": "Camera",
     "source_url": "",
     "source_url_sub": "",
+    # The real camera's MAC. Optional, but the most durable thing to derive the
+    # virtual MAC from: it survives the source changing IP or password.
+    "source_mac": "",
     "enabled": True,
     "onvif_port": 80,
     "rtsp_port": 554,
@@ -49,11 +53,61 @@ DEFAULTS = {
 }
 
 
-def generate_mac(cam_id: str) -> str:
-    """Deterministic MAC for a camera id, so DHCP reservations survive recreation."""
-    digest = hashlib.sha256(cam_id.encode("utf-8")).hexdigest()
+def generate_mac(identity: str) -> str:
+    """Deterministic MAC for an identity string.
+
+    Same identity in, same MAC out, so a camera that is deleted and added again
+    lands back on its existing DHCP reservation.
+    """
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     tail = [digest[i : i + 2] for i in range(0, 8, 2)]
     return ":".join(MAC_PREFIX.split(":") + tail)
+
+
+def normalize_mac(value: str) -> str:
+    """Twelve lowercase hex digits, or '' if this is not a MAC address."""
+    digits = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    return digits.lower() if len(digits) == 12 else ""
+
+
+def identity_key(cam: dict) -> str:
+    """What this camera's virtual MAC is derived from.
+
+    The real camera's MAC is the best answer, because it survives the source
+    changing address or password. Without it, fall back to the host and path of
+    the source URL: credentials are stripped, so rotating a password does not
+    move the camera onto a different address, and the path keeps two channels
+    behind one recorder apart.
+    """
+    real = normalize_mac(cam.get("source_mac", ""))
+    if real:
+        return f"mac:{real}"
+
+    url = (cam.get("source_url") or "").strip()
+    if url:
+        parsed = urlsplit(url)
+        # netloc carries user:pass@host:port; hostname/port drop the credentials.
+        host = (parsed.hostname or "").lower()
+        port = f":{parsed.port}" if parsed.port else ""
+        if host:
+            return f"url:{host}{port}{parsed.path.rstrip('/')}".lower()
+
+    # Nothing stable to go on; the id at least keeps it unique.
+    return f"id:{cam.get('id', '')}"
+
+
+def assign_mac(cam: dict, taken: set[str] | None = None) -> str:
+    """Pick this camera's MAC, avoiding one already in use by another camera."""
+    identity = identity_key(cam)
+    mac = generate_mac(identity)
+    taken = {m.lower() for m in (taken or set())}
+    # Two records pointing at the same source would otherwise collide, and two
+    # NICs sharing a MAC on one LAN break both of them.
+    suffix = 0
+    while mac.lower() in taken:
+        suffix += 1
+        mac = generate_mac(f"{identity}#{suffix}")
+    return mac
 
 
 def hostname_for(cam: dict) -> str:
@@ -76,13 +130,13 @@ def uuid_for(cam_id: str) -> str:
     return str(uuid.UUID(hashlib.sha1(cam_id.encode()).hexdigest()[:32]))
 
 
-def new_camera(payload: dict | None = None) -> dict:
+def new_camera(payload: dict | None = None, taken: set[str] | None = None) -> dict:
     cam = dict(DEFAULTS)
     cam["id"] = uuid.uuid4().hex
     cam["created_at"] = time.time()
     if payload:
         cam.update(sanitize(payload))
-    cam["mac"] = generate_mac(cam["id"])
+    cam["mac"] = assign_mac(cam, taken)
     cam["serial"] = serial_for(cam["id"])
     cam["uuid"] = uuid_for(cam["id"])
     return cam
@@ -138,6 +192,8 @@ def validate(cam: dict) -> list[str]:
         errors.append("RTSP port must be between 1 and 65535.")
     if cam.get("require_auth") and not cam.get("password"):
         errors.append("A password is required when authentication is enabled.")
+    if cam.get("source_mac") and not normalize_mac(cam["source_mac"]):
+        errors.append("Source MAC must be 12 hex digits, e.g. a0:bb:3e:11:22:33.")
     if cam.get("output_codec") not in ("copy", "h264", "h265"):
         errors.append("Output codec must be copy, h264 or h265.")
     if cam.get("hwaccel") not in ("auto", "none", "vaapi", "qsv", "nvenc"):

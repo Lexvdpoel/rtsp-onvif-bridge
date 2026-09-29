@@ -58,10 +58,13 @@ def parse(payload) -> list[dict]:
         raise RestoreError("The backup contains no cameras.")
 
     cameras = []
+    taken: set[str] = set()
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise RestoreError(f"Camera {index + 1} is not an object.")
-        cameras.append(_normalize(item, index))
+        cam = _normalize(item, index, taken)
+        taken.add(cam["mac"])
+        cameras.append(cam)
 
     ids = [cam["id"] for cam in cameras]
     if len(set(ids)) != len(ids):
@@ -69,7 +72,7 @@ def parse(payload) -> list[dict]:
     return cameras
 
 
-def _normalize(item: dict, index: int) -> dict:
+def _normalize(item: dict, index: int, taken: set[str] | None = None) -> dict:
     """Rebuild a stored camera from backup data, filling in what is missing."""
     cam = dict(models.DEFAULTS)
     cam.update(models.sanitize(item))
@@ -82,7 +85,7 @@ def _normalize(item: dict, index: int) -> dict:
 
     # Derived from the id, so a backup that lost them still restores the same
     # MAC address and therefore the same DHCP reservation.
-    cam["mac"] = item.get("mac") or models.generate_mac(cam_id)
+    cam["mac"] = item.get("mac") or models.assign_mac(cam, taken)
     cam["serial"] = item.get("serial") or models.serial_for(cam_id)
     cam["uuid"] = item.get("uuid") or models.uuid_for(cam_id)
 

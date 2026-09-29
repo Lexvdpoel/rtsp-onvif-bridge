@@ -47,9 +47,12 @@ class CameraStore:
         return None
 
     def add(self, payload: dict) -> dict:
-        cam = models.new_camera(payload)
         with self._lock:
             cameras = self._read()
+            # Built inside the lock so the new MAC is checked against the set
+            # that is actually stored, not a stale snapshot of it.
+            taken = {cam.get("mac", "") for cam in cameras}
+            cam = models.new_camera(payload, taken)
             cameras.append(cam)
             self._write(cameras)
         return cam

@@ -273,6 +273,17 @@
                    placeholder="rtsp://user:pass@192.168.1.50:554/stream2">
             <div class="hint">Adds a second ONVIF profile, which lets an NVR pick a low-resolution stream for previews.</div>
           </div>
+          <div class="wide">
+            <label for="f-source-mac">MAC address of the real camera (optional)</label>
+            <input type="text" id="f-source-mac" name="source_mac" placeholder="a0:bb:3e:11:22:33">
+            <div class="hint">
+              The virtual MAC is derived from this, so deleting this camera and adding it back
+              later gives the same address and your DHCP reservation still fits. Left empty, the
+              host and path of the source URL are used instead — that survives a password change
+              but not the camera moving to a different IP. Fill it in when you add the camera:
+              the virtual MAC is fixed on creation and is not recalculated afterwards.
+            </div>
+          </div>
         </div>
       </fieldset>
 
