@@ -417,6 +417,15 @@ def main() -> int:
         stream_url = (
             f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy else cfg.source_url
         )
+        # The relay already carries the sub stream; without handing it over, the
+        # channels Protect uses for live view get the full-resolution one.
+        sub_stream_url = ""
+        if cfg.source_url_sub:
+            sub_stream_url = (
+                f"rtsp://127.0.0.1:{cfg.rtsp_port}/sub"
+                if cfg.proxy
+                else cfg.source_url_sub
+            )
         state_dir = _env("STATE_DIR", "/state")
         try:
             cert = unifi.ensure_certificate(cfg.id, state_dir)
@@ -429,7 +438,8 @@ def main() -> int:
             nonlocal unifi_proc, unifi_args
             try:
                 unifi_args = unifi.build_args(cfg, state, cert, stream_url,
-                                              token=token, host=host)
+                                              token=token, host=host,
+                                              sub_url=sub_stream_url)
                 unifi_proc = unifi.start(unifi_args)
                 state.message = ""
             except Exception as exc:  # noqa: BLE001 - reported, never fatal
