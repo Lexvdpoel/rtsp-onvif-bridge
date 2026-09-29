@@ -200,6 +200,19 @@ class Detector(threading.Thread):
             return self.cfg.source_url_sub
         return self.cfg.source_url
 
+    def transport(self) -> str:
+        """How to read whatever source() picked.
+
+        The configured transport describes how to reach the *real* camera. When
+        the detector is reading our own relay over loopback instead, that
+        setting does not apply: TCP there costs nothing, never fragments and
+        never drops, where UDP inherits whatever the socket buffers do under
+        load.
+        """
+        if self.relay_url:
+            return "tcp"
+        return self.cfg.rtsp_transport
+
     def run(self):
         if self.model is None:
             try:
@@ -210,7 +223,7 @@ class Detector(threading.Thread):
                 return
 
         while not self._stop.is_set():
-            proc = frame_reader(self.source(), self.cfg.rtsp_transport, self.cfg.detect_fps)
+            proc = frame_reader(self.source(), self.transport(), self.cfg.detect_fps)
             print(f"[detect] watching {self.source()} at {self.cfg.detect_fps} fps")
             try:
                 self._consume(proc)

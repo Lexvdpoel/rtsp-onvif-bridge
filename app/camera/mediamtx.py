@@ -91,6 +91,13 @@ def write_config(paths: dict[str, dict], rtsp_port: int, transport: str = "tcp",
         "logDestinations: [stdout]\n"
         "readTimeout: 15s\n"
         "writeTimeout: 15s\n"
+        # "write queue is full" in the relay's log means a reader fell behind
+        # and packets were about to be dropped. The default of 512 packets is
+        # sized for one well-behaved reader; here a camera is commonly read
+        # three times at once -- the NVR's two channels plus the detector -- and
+        # a moment of slowness on any of them is enough to fill it. The cost of
+        # a deeper queue is memory, and at this size that is a few megabytes.
+        "writeQueueSize: 4096\n"
         # Bound to loopback: it is only read by this container's stats collector.
         "api: yes\n"
         "apiAddress: 127.0.0.1:9997\n"

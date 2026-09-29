@@ -909,12 +909,14 @@ class OnvifHandler(BaseHTTPRequestHandler):
 
         token = parse_qs(urlparse(self.path).query).get("profile", ["MainStream"])[0]
         profile = self.service.profile_by_token(token)
-        source = (
-            f"rtsp://127.0.0.1:{cfg.rtsp_port}/{profile['path']}"
-            if cfg.proxy
-            else profile["source"]
-        )
-        image = snapshot_mod.grab(source, cfg.rtsp_transport)
+        # Over loopback, always TCP: the configured transport says how to reach
+        # the real camera, and reading our own relay is a different journey.
+        if cfg.proxy:
+            source = f"rtsp://127.0.0.1:{cfg.rtsp_port}/{profile['path']}"
+            transport = "tcp"
+        else:
+            source, transport = profile["source"], cfg.rtsp_transport
+        image = snapshot_mod.grab(source, transport)
         if not image:
             return self._send(b"Snapshot unavailable", 503, "text/plain; charset=utf-8")
         self._send(image, 200, "image/jpeg", {"Cache-Control": "no-store"})
