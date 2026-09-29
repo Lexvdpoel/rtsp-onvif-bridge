@@ -265,6 +265,15 @@ class DockerManager:
         environment["HWACCEL"] = hwaccel
         if not environment.get("UNIFI_HOST"):
             environment["UNIFI_HOST"] = self.default_unifi_host
+        # A debug switch rather than a setting: set DETECT_DEBUG on the
+        # controller and every camera it creates logs what the detector saw,
+        # including the candidates it discarded. That is the only way to tell an
+        # object that was never detected from one that scored just under the
+        # threshold.
+        for passthrough in ("DETECT_DEBUG", "DETECT_DEBUG_FLOOR", "DETECT_MOTION_HOLD"):
+            value = os.environ.get(passthrough, "").strip()
+            if value:
+                environment[passthrough] = value
         try:
             container = self.client.containers.create(
                 image=self.image,

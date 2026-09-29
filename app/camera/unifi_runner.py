@@ -17,6 +17,11 @@ import sys
 
 DETECT_PORT = int(os.environ.get("DETECT_BRIDGE_PORT", "8099"))
 
+# How long a motion event stays open after the last detection. It has to be
+# closed: trigger_motion_start does nothing while an event is already open, so
+# an event left hanging swallows every detection after the first one.
+MOTION_HOLD = float(os.environ.get("DETECT_MOTION_HOLD", "8"))
+
 
 def _object_type(name: str):
     """Map our detection type onto the proxy's enum.
@@ -47,10 +52,12 @@ def build_camera_class():
         """RTSP backend that also accepts detections over loopback."""
 
         async def run(self) -> None:
+            self._motion_deadline = None
             self._detect_server = await asyncio.start_server(
                 self._handle_detection, "127.0.0.1", DETECT_PORT
             )
             self.logger.info("Listening for detections on 127.0.0.1:%s", DETECT_PORT)
+            self._motion_closer = asyncio.ensure_future(self._close_idle_motion())
             await super().run()
 
         async def _handle_detection(self, reader, writer):
@@ -64,12 +71,38 @@ def build_camera_class():
                         continue
                     name = parts[0].strip().lower()
                     self.logger.info("Detection reported: %s", name)
+                    # Extend first: a detection arriving while the closer is
+                    # about to fire must keep the event open, not race it shut.
+                    self._motion_deadline = (
+                        asyncio.get_event_loop().time() + MOTION_HOLD
+                    )
                     try:
                         await self.trigger_motion_start(_object_type(name))
                     except Exception as exc:  # noqa: BLE001
                         self.logger.warning("Could not report %s: %s", name, exc)
             finally:
                 writer.close()
+
+        async def _close_idle_motion(self) -> None:
+            """End a motion event once the detections stop arriving.
+
+            Nothing else does this. The proxy only closes an event on shutdown or
+            through its optional HTTP API, and trigger_motion_start is a no-op
+            while one is open, so without this the first detection would be the
+            only one Protect ever hears about.
+            """
+            while True:
+                await asyncio.sleep(1)
+                deadline = self._motion_deadline
+                if deadline is None:
+                    continue
+                if asyncio.get_event_loop().time() < deadline:
+                    continue
+                self._motion_deadline = None
+                try:
+                    await self.trigger_motion_stop()
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning("Could not end the motion event: %s", exc)
 
     return DetectingRTSPCam
 

@@ -24,6 +24,15 @@ import time
 
 MODEL_PATH = os.environ.get("DETECT_MODEL", "/opt/models/ssd_mobilenet_v1_10.onnx")
 
+# With DETECT_DEBUG=1 every candidate the model returns is logged, including the
+# ones below the confidence threshold. Without it there is no way to tell a
+# detector that saw nothing from one that saw the car at 0.31 and discarded it,
+# which is the difference between "move the camera" and "lower the threshold".
+DEBUG = os.environ.get("DETECT_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
+# A floor for the debug log: below this the model is reporting noise in every
+# frame and the log would say nothing.
+DEBUG_FLOOR = float(os.environ.get("DETECT_DEBUG_FLOOR", "0.15"))
+
 # The model wants a square uint8 image; TensorFlow's pipeline trained it by
 # stretching to 300x300, so stretch rather than letterbox.
 INPUT_SIZE = 300
@@ -203,6 +212,7 @@ class Detector(threading.Thread):
         self.wanted = {t for t in ALL_TYPES if t in cfg.detect_types}
         self.error = ""
         self.frames = 0
+        self._last_debug = 0.0
         self._stop = threading.Event()
 
     def source(self) -> str:
@@ -249,11 +259,17 @@ class Detector(threading.Thread):
 
     def handle_frame(self, frame):
         best: dict[str, float] = {}
+        seen: list[tuple[str, float]] = []
         for object_type, score, _box in self.model.infer(frame):
+            if DEBUG and score >= DEBUG_FLOOR:
+                seen.append((object_type, score))
             if object_type not in self.wanted or score < self.cfg.detect_confidence:
                 continue
             if score > best.get(object_type, 0.0):
                 best[object_type] = score
+
+        if seen:
+            self._log_candidates(seen)
 
         for object_type, score in self.tracker.update(best):
             print(f"[detect] {object_type} ({score:.2f})")
@@ -261,6 +277,23 @@ class Detector(threading.Thread):
                 self.on_event(object_type, score)
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report {object_type}: {exc}")
+
+    def _log_candidates(self, seen):
+        """One line a second at most, so the log stays readable."""
+        now = time.monotonic()
+        if now - self._last_debug < 1.0:
+            return
+        self._last_debug = now
+        ranked = sorted(seen, key=lambda pair: -pair[1])[:4]
+        wanted = ", ".join(
+            f"{name} {score:.2f}" + ("" if name in self.wanted else " (not wanted)")
+            for name, score in ranked
+        )
+        print(
+            f"[detect] candidates: {wanted}"
+            f" | reporting at >= {self.cfg.detect_confidence:.2f}"
+            f" after {self.tracker.min_hits} frames in a row"
+        )
 
     def stop(self):
         self._stop.set()
