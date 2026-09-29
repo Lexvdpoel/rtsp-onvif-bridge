@@ -328,21 +328,34 @@ you feed it — a G4 line implies H.264, a G5 line H.265.
 
 ### A console on another VLAN
 
-Discovery is a broadcast and a broadcast does not cross a router, so a console on
-another subnet never sees it. A real UniFi camera has the same problem, and
-Ubiquiti's answer is to log in to the camera and tell it where the Protect host
-is. This does that for you: fill in **Protect console address** and the camera
-announces itself straight to it every ten seconds, until something adopts it.
+**Discovery wants the console on the same layer 2 network as the camera.** That
+is a property of how UniFi adoption works, not of this bridge: a real UniFi
+camera on another VLAN is not discovered either, which is why Ubiquiti has you
+log in to the camera and point it at the Protect host by hand.
 
-So with cameras on 10.51.100.x and Protect on 10.51.0.x, leave discovery on and
-set the console address to your Protect host. Nothing else changes.
+When a console address is set, the camera does send its announcement straight to
+it every ten seconds, which is the closest equivalent. Whether a console acts on
+an unsolicited announcement is up to the console, and a routed one may simply
+ignore it. If nothing has adopted the camera after a minute, the log says so and
+points at the alternatives.
 
-In UniFi mode the camera's MAC address comes from a Ubiquiti prefix rather than
-the private one the ONVIF cameras use. A console decides what a device is partly
-from its OUI, and an address registered to nobody is not something a UniFi camera
-would ever have. Switching an existing camera to UniFi mode therefore moves its
-address — **update the DHCP reservation**, since the old one no longer matches.
-The log says so when it happens.
+So with cameras on 10.51.100.x and Protect on 10.51.0.x you have two options that
+do work:
+
+1. **Put the camera containers on the console's network.** Point
+   `MACVLAN_PARENT` at the interface carrying the Protect VLAN. Discovery is then
+   a plain broadcast and adoption is one click.
+2. **Adopt with a token**, below. Everything after discovery is unicast and
+   routes fine, so this works across VLANs.
+
+If you do run them on separate VLANs, the firewall needs:
+
+| Direction | Port | What for |
+|---|---|---|
+| camera → console | UDP 10001 | the announcement |
+| console → camera | TCP 443 | the adoption payload Protect pushes |
+| camera → console | TCP 7442 | the management websocket |
+| camera → console | TCP 7550 | the video stream |
 
 The camera offers itself in both generations of the discovery protocol — v1 and
 v2 — because a console only understands a reply in the version it asked in, and
@@ -351,15 +364,6 @@ which one it uses depends on its firmware. The log says which was answered:
 ```
 [unifi-discovery] answered 10.51.100.1 (v2)
 ```
-
-Your inter-VLAN firewall has to allow:
-
-| Direction | Port | What for |
-|---|---|---|
-| camera → console | UDP 10001 | the announcement that makes the camera appear |
-| console → camera | TCP 443 | the adoption payload Protect pushes |
-| camera → console | TCP 7442 | the management websocket |
-| camera → console | TCP 7550 | the video stream |
 
 ### If it still cannot be adopted
 

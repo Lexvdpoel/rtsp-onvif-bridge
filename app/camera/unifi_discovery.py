@@ -119,6 +119,8 @@ class DiscoveryResponder(threading.Thread):
     """
 
     ANNOUNCE_SECONDS = 10
+    # Six announcements is a minute of silence; long enough to be sure.
+    HINT_AFTER = 6
 
     def __init__(self, cfg, state, identity: dict, adoptable=lambda: True,
                  console: str = ""):
@@ -131,6 +133,7 @@ class DiscoveryResponder(threading.Thread):
         self.answered = 0
         self.announced = 0
         self.error = ""
+        self._nudged = False
         self._started_at = time.monotonic()
         self._stop = threading.Event()
 
@@ -177,6 +180,25 @@ class DiscoveryResponder(threading.Thread):
             uptime=int(time.monotonic() - self._started_at),
         )
 
+    def _nudge(self):
+        """Say something useful once it is clear nothing is going to adopt us.
+
+        Discovery wants the console on the same layer 2 segment. Across a router
+        the announcements below are a best effort, and when they come to nothing
+        the operator should hear why rather than watch a silent log.
+        """
+        if self._nudged or self.announced < self.HINT_AFTER:
+            return
+        self._nudged = True
+        print(
+            "[unifi-discovery] still not adopted after "
+            f"{self.announced} announcements to {console_address(self.console)[0]}. "
+            "Discovery normally needs the console on the same layer 2 network as "
+            "the camera; a console behind a router may simply ignore this. Either "
+            "put the cameras on the console's VLAN, or switch discovery off for "
+            "this camera and adopt it with a token instead."
+        )
+
     def _announce(self, sock):
         """Tell a console on another subnet that this camera is here.
 
@@ -194,6 +216,7 @@ class DiscoveryResponder(threading.Thread):
             self.announced += 1
             if self.announced == 1:
                 print(f"[unifi-discovery] announced to {host}:{port} (v1 and v2)")
+            self._nudge()
         except OSError as exc:
             self.error = f"could not announce to {host}: {exc}"
             print(f"[unifi-discovery] {self.error}")
