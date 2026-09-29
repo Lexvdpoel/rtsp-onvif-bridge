@@ -25,6 +25,7 @@ from . import (
     mediamtx,
     net,
     probe as probe_mod,
+    recorder as recorder_mod,
     transcode,
 )
 from .onvif_server import serve as serve_onvif
@@ -79,6 +80,7 @@ class Config:
     detect_min_hits: int
     detect_cooldown: int
     event_hold: int
+    clips: bool
     width: int
     height: int
     fps: int
@@ -128,6 +130,7 @@ class Config:
             detect_min_hits=_env_int("DETECT_MIN_HITS", 3),
             detect_cooldown=_env_int("DETECT_COOLDOWN", 30),
             event_hold=_env_int("EVENT_HOLD", 8),
+            clips=_env_bool("CLIPS", True),
             width=_env_int("VIDEO_WIDTH", 1920),
             height=_env_int("VIDEO_HEIGHT", 1080),
             fps=_env_int("VIDEO_FPS", 15),
@@ -394,13 +397,30 @@ def main() -> int:
 
     # 5. object detection --------------------------------------------------
     detector = None
+    recorder = None
     if cfg.detect:
+        # Stills come off the main stream: the detector runs on the sub stream
+        # because it only needs to know something is there, but a still is for a
+        # person to look at.
+        if cfg.clips:
+            still_source = (
+                f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy
+                else cfg.source_url
+            )
+            recorder = recorder_mod.Recorder(
+                cfg.id, _env("STATE_DIR", "/state"), still_source,
+                transport="tcp" if cfg.proxy else cfg.rtsp_transport,
+            )
+            recorder.start()
+
         def on_detection(object_type: str, score: float):
             state.detections.append(
                 {"type": object_type, "score": round(score, 3), "at": time.time()}
             )
             del state.detections[:-50]
             events.note_detection(object_type, score)
+            if recorder is not None:
+                recorder.record(object_type, score)
 
         # Read through the relay when there is one, so the camera is opened
         # once for the sub stream and the detector shares it with whatever else
@@ -453,6 +473,8 @@ def main() -> int:
 
     if detector is not None:
         detector.stop()
+    if recorder is not None:
+        recorder.stop()
     events.stop()
     if collector is not None:
         collector.stop()

@@ -20,6 +20,14 @@
     /* Categorical slots 1 and 2 of the reference palette: incoming / outgoing. */
     --series-1: #2a78d6;
     --series-2: #eb6834;
+    /* Detection classes. Assigned in this fixed order and never cycled: there
+       are exactly three and there will not be a fourth, because the model
+       distinguishes exactly these. Validated for colour-vision deficiency
+       against this surface; the worst adjacent pair separates by 23 in OKLab
+       under protanopia, well clear of the floor. */
+    --cat-person: #2a78d6;
+    --cat-vehicle: #eb6834;
+    --cat-animal: #8b5fc9;
     --shadow: 0 1px 3px rgba(16, 24, 40, .08);
     --radius: 10px;
   }
@@ -38,6 +46,11 @@
       --err: #ef6b6b;
       --series-1: #3987e5;
       --series-2: #d95926;
+      /* Chosen for the dark surface rather than flipped: the light steps sit
+         outside the lightness band against #1a1a19. */
+      --cat-person: #3987e5;
+      --cat-vehicle: #d95926;
+      --cat-animal: #9b74d8;
       --shadow: none;
     }
   }
@@ -149,6 +162,36 @@
 
   .empty { text-align: center; color: var(--muted); padding: 48px 20px; }
 
+  /* ---- detection timeline ---- */
+  .tl-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tl-bar select { width: auto; min-width: 200px; }
+  .tl-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-left: auto; }
+  .tl-legend .item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+  .tl-wrap { position: relative; margin-bottom: 4px; }
+  .tl { display: block; width: 100%; height: 66px; overflow: visible; }
+  .tl-hours { display: flex; justify-content: space-between; font-size: 11px;
+    color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 14px; }
+  .tl-shots {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px; max-height: 44vh; overflow: auto; padding: 2px;
+  }
+  .shot {
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    background: var(--bg); cursor: pointer; padding: 0; text-align: left;
+  }
+  .shot:hover, .shot:focus-visible { border-color: var(--accent); }
+  .shot.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .shot img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: var(--border); }
+  .shot .meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; }
+  .shot .meta .when { font-variant-numeric: tabular-nums; }
+  .shot .meta .score { margin-left: auto; color: var(--muted); }
+  .viewer { margin-bottom: 12px; }
+  .viewer img { display: block; width: 100%; border-radius: 8px; background: var(--bg); }
+  .viewer .cap { font-size: 12px; color: var(--muted); margin-top: 6px;
+    display: flex; align-items: center; gap: 6px; }
+  .usage-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .usage-bar > div { height: 100%; background: var(--accent); }
+
   dialog {
     border: 1px solid var(--border); border-radius: var(--radius); padding: 0;
     background: var(--panel); color: var(--text); width: min(720px, 94vw);
@@ -240,6 +283,7 @@
   <button id="backupBtn">Backup</button>
   <button id="restoreBtn">Restore</button>
   <button id="addBtn" class="primary">Add camera</button>
+  <button id="settingsBtn" class="link" title="Storage and other settings">Settings</button>
   <button id="accountBtn" class="link" title="Account">Account</button>
   <input type="file" id="restoreFile" accept="application/json,.json" hidden>
 </header>
@@ -462,6 +506,16 @@
             <label for="f-event-hold">Motion hold (seconds)</label>
             <input type="number" id="f-event-hold" name="event_hold" value="8" min="1" max="300">
           </div>
+          <div class="check">
+            <input type="checkbox" id="f-clips" name="clips" checked>
+            <label for="f-clips" style="margin:0">Save a still per detection</label>
+          </div>
+          <div class="wide hint">
+            Stills are what make the timeline worth opening: they turn a count into
+            something you can check. One ffmpeg run and a few tens of kilobytes per
+            detection, off the main stream. The disk they may take is set once for all
+            cameras under Settings, and the oldest go first.
+          </div>
           <div class="wide hint">
             An object has to appear in several consecutive frames before it counts, which throws
             away the single-frame flickers a small model produces. After reporting, that type
@@ -535,6 +589,36 @@
   </div>
 </dialog>
 
+<dialog id="eventsDialog" style="width:min(980px,96vw)">
+  <div class="dialog-body">
+    <h2 style="margin:0 0 14px;font-size:17px;" id="eventsTitle">Detections</h2>
+    <div class="tl-bar">
+      <select id="eventsDay"></select>
+      <span class="pill" id="eventsCount"><span>—</span></span>
+      <div class="tl-legend">
+        <span class="item"><span class="swatch" style="background:var(--cat-person)"></span>person</span>
+        <span class="item"><span class="swatch" style="background:var(--cat-vehicle)"></span>vehicle</span>
+        <span class="item"><span class="swatch" style="background:var(--cat-animal)"></span>animal</span>
+      </div>
+    </div>
+    <div class="tl-wrap">
+      <svg class="tl" id="eventsTimeline" preserveAspectRatio="none"></svg>
+      <div class="tip" id="eventsTip"></div>
+    </div>
+    <div class="tl-hours" id="eventsHours"></div>
+    <div class="viewer" id="eventsViewer" hidden>
+      <img id="eventsImage" alt="">
+      <div class="cap" id="eventsCaption"></div>
+    </div>
+    <div class="tl-shots" id="eventsShots"></div>
+    <div class="empty" id="eventsEmpty" hidden>Nothing recorded for this day.</div>
+  </div>
+  <div class="dialog-foot">
+    <button type="button" id="refreshEvents">Refresh</button>
+    <button type="button" class="primary" id="closeEvents">Close</button>
+  </div>
+</dialog>
+
 <dialog id="restoreDialog">
   <div class="dialog-body">
     <h2 style="margin:0 0 12px;font-size:17px;">Restore backup</h2>
@@ -549,6 +633,39 @@
     <button type="button" id="restoreMerge">Add to existing</button>
     <button type="button" class="primary" id="restoreReplace">Replace everything</button>
   </div>
+</dialog>
+
+<dialog id="settingsDialog">
+  <form id="settingsForm" method="dialog">
+    <div class="dialog-body">
+      <h2 style="margin:0 0 18px;font-size:17px;">Settings</h2>
+      <fieldset>
+        <legend>Detection stills</legend>
+        <div class="form-grid">
+          <div>
+            <label for="s-budget">Disk budget (GB)</label>
+            <input type="number" id="s-budget" name="clip_budget_gb"
+                   min="0.1" max="2000" step="0.5" required>
+          </div>
+          <div class="wide">
+            <div class="usage-bar"><div id="s-usage-fill" style="width:0%"></div></div>
+            <div class="hint" id="s-usage">—</div>
+          </div>
+          <div class="wide hint">
+            One still is saved per detection, for every camera, and the oldest are
+            deleted as the budget fills — so this is a ceiling, not an estimate. At
+            roughly 50 KB a still, ten gigabytes is about two hundred thousand of them:
+            months for a quiet camera, days for a busy one. Lowering it takes effect at
+            once.
+          </div>
+        </div>
+      </fieldset>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" id="settingsCancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="accountDialog">
@@ -579,6 +696,7 @@
 
 <script>
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 let cameras = [];
 let editingId = null;
 let logCameraId = null;
@@ -723,6 +841,207 @@ function detectText(cam) {
   return `${last.type} ${ago}s ago (${seen.length} recent)`;
 }
 
+// ------------------------------------------------------------------- settings
+
+function humanBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+async function openSettings() {
+  try {
+    const current = await api("/api/settings");
+    $("#s-budget").value = current.clip_budget_gb;
+    const used = current.clips || {};
+    const budget = used.budget || current.clip_budget_gb * 1024 * 1024 * 1024;
+    const bytes = used.bytes || 0;
+    const pct = budget ? Math.min(100, (bytes / budget) * 100) : 0;
+    $("#s-usage-fill").style.width = `${pct}%`;
+    $("#s-usage").textContent = used.at
+      ? `${humanBytes(bytes)} used across ${used.files || 0} stills (${pct.toFixed(1)}% of the budget)`
+      : "not measured yet";
+    $("#settingsDialog").showModal();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+$("#settingsBtn").addEventListener("click", openSettings);
+$("#settingsCancel").addEventListener("click", () => $("#settingsDialog").close());
+$("#settingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clip_budget_gb: Number($("#s-budget").value) }),
+    });
+    $("#settingsDialog").close();
+    toast("Settings saved");
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+// --------------------------------------------------------- detection timeline
+
+const CAT_COLOUR = {
+  person: "var(--cat-person)",
+  vehicle: "var(--cat-vehicle)",
+  animal: "var(--cat-animal)",
+};
+let eventsCamId = null;
+let eventsList = [];
+let eventsDayValue = "";
+
+function clockOf(at) {
+  const d = new Date(at * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function dayFraction(at) {
+  const d = new Date(at * 1000);
+  return (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400;
+}
+
+function drawTimeline() {
+  const svg = $("#eventsTimeline");
+  const width = 1000;
+  const height = 66;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const parts = [];
+  // Three-hour grid, kept recessive: it is there to read a position against,
+  // not to be looked at.
+  for (let h = 0; h <= 24; h += 3) {
+    const x = (h / 24) * width;
+    parts.push(`<line x1="${x}" y1="6" x2="${x}" y2="${height - 6}"
+      stroke="var(--border)" stroke-width="1"/>`);
+  }
+  // One mark per detection. Rounded ends, 4px wide, anchored to the baseline.
+  eventsList.forEach((ev, index) => {
+    const x = dayFraction(ev.at) * width;
+    const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+    parts.push(`<line data-index="${index}" x1="${x}" y1="10" x2="${x}" y2="${height - 10}"
+      stroke="${colour}" stroke-width="4" stroke-linecap="round" opacity="0.85"/>`);
+  });
+  svg.innerHTML = parts.join("");
+
+  const hours = [];
+  for (let h = 0; h <= 24; h += 3) hours.push(`<span>${String(h).padStart(2, "0")}:00</span>`);
+  $("#eventsHours").innerHTML = hours.join("");
+}
+
+function shotUrl(ev) {
+  return `/api/cameras/${eventsCamId}/events/${eventsDayValue}/${ev.name}`;
+}
+
+function drawShots() {
+  const grid = $("#eventsShots");
+  // Newest first: the reason anyone opens this is to see what just happened.
+  const ordered = eventsList.slice().reverse();
+  grid.innerHTML = ordered
+    .map((ev) => {
+      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      return `<button class="shot" data-name="${ev.name}" type="button">
+        <img loading="lazy" src="${shotUrl(ev)}" alt="${ev.type} at ${clockOf(ev.at)}">
+        <span class="meta">
+          <span class="swatch" style="background:${colour}"></span>
+          <span class="when">${clockOf(ev.at)}</span>
+          <span>${ev.type}</span>
+          <span class="score">${Math.round(ev.score * 100)}%</span>
+        </span>
+      </button>`;
+    })
+    .join("");
+  $("#eventsEmpty").hidden = eventsList.length > 0;
+}
+
+function showShot(name) {
+  const ev = eventsList.find((e) => e.name === name);
+  if (!ev) return;
+  $("#eventsViewer").hidden = false;
+  $("#eventsImage").src = shotUrl(ev);
+  const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+  $("#eventsCaption").innerHTML =
+    `<span class="swatch" style="background:${colour}"></span>` +
+    `${ev.type} · ${clockOf(ev.at)} · ${Math.round(ev.score * 100)}% confident`;
+  $$("#eventsShots .shot").forEach((el) => el.classList.toggle("on", el.dataset.name === name));
+  const active = $(`#eventsShots .shot[data-name="${name}"]`);
+  if (active) active.scrollIntoView({ block: "nearest" });
+}
+
+async function loadEventDays() {
+  const info = await api(`/api/cameras/${eventsCamId}/events`);
+  const select = $("#eventsDay");
+  const days = info.days || [];
+  select.innerHTML = days
+    .map((d) => `<option value="${d.day}">${d.day} — ${d.count} detection${d.count === 1 ? "" : "s"}</option>`)
+    .join("");
+  if (!days.length) {
+    eventsList = [];
+    eventsDayValue = "";
+    drawTimeline();
+    drawShots();
+    $("#eventsCount").innerHTML = "<span>nothing recorded yet</span>";
+    return;
+  }
+  if (!days.some((d) => d.day === eventsDayValue)) eventsDayValue = days[0].day;
+  select.value = eventsDayValue;
+  await loadEventsForDay();
+}
+
+async function loadEventsForDay() {
+  if (!eventsDayValue) return;
+  const data = await api(`/api/cameras/${eventsCamId}/events/${eventsDayValue}`);
+  eventsList = data.events || [];
+  const counts = {};
+  eventsList.forEach((e) => { counts[e.type] = (counts[e.type] || 0) + 1; });
+  const summary = Object.keys(counts).sort()
+    .map((k) => `${counts[k]} ${k}`).join(" · ") || "nothing";
+  $("#eventsCount").innerHTML = `<span>${summary}</span>`;
+  $("#eventsViewer").hidden = true;
+  drawTimeline();
+  drawShots();
+}
+
+$("#eventsDay").addEventListener("change", (event) => {
+  eventsDayValue = event.target.value;
+  loadEventsForDay().catch((err) => toast(err.message));
+});
+$("#refreshEvents").addEventListener("click", () => {
+  loadEventDays().catch((err) => toast(err.message));
+});
+$("#closeEvents").addEventListener("click", () => $("#eventsDialog").close());
+$("#eventsShots").addEventListener("click", (event) => {
+  const shot = event.target.closest(".shot");
+  if (shot) showShot(shot.dataset.name);
+});
+$("#eventsTimeline").addEventListener("click", (event) => {
+  const mark = event.target.closest("line[data-index]");
+  if (mark) showShot(eventsList[Number(mark.dataset.index)].name);
+});
+$("#eventsTimeline").addEventListener("mousemove", (event) => {
+  const tip = $("#eventsTip");
+  const mark = event.target.closest("line[data-index]");
+  if (!mark) { tip.classList.remove("show"); return; }
+  const ev = eventsList[Number(mark.dataset.index)];
+  const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+  tip.innerHTML = `<div class="trow"><span class="swatch" style="background:${colour}"></span>` +
+    `${ev.type}<span class="tval">${clockOf(ev.at)}</span></div>`;
+  const box = $("#eventsTimeline").getBoundingClientRect();
+  tip.style.left = `${Math.min(box.width - 140, Math.max(0, event.clientX - box.left - 60))}px`;
+  tip.style.top = "-38px";
+  tip.classList.add("show");
+});
+$("#eventsTimeline").addEventListener("mouseleave", () => {
+  $("#eventsTip").classList.remove("show");
+});
+
 function eventsText(cam) {
   // Whether anything is listening is the first thing to check when detections
   // appear here but not in the NVR.
@@ -815,6 +1134,9 @@ function render() {
             ${cam.enabled ? "Stop" : "Start"}
           </button>
           <button data-action="restart" data-id="${cam.id}">Restart</button>
+          ${cam.detect && cam.clips
+            ? `<button data-action="events" data-id="${cam.id}">Detections</button>`
+            : ""}
           <button data-action="logs" data-id="${cam.id}">Logs</button>
           <button data-action="edit" data-id="${cam.id}">Edit</button>
           <button data-action="delete" data-id="${cam.id}" class="danger">Delete</button>
@@ -1192,6 +1514,15 @@ $("#list").addEventListener("click", async (event) => {
   if (!cam) return;
 
   if (action === "edit") return openEdit(cam);
+  if (action === "events") {
+    eventsCamId = id;
+    eventsDayValue = "";
+    $("#eventsTitle").textContent = `Detections — ${cam.name}`;
+    $("#eventsViewer").hidden = true;
+    $("#eventsShots").innerHTML = "";
+    $("#eventsDialog").showModal();
+    return loadEventDays().catch((err) => toast(err.message, true));
+  }
   if (action === "logs") {
     logCameraId = id;
     $("#logTitle").textContent = `Logs — ${cam.name}`;

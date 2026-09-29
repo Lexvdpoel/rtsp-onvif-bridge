@@ -383,6 +383,53 @@ Whether Protect acts on the *smart* topics — person, vehicle, animal — rathe
 than treating everything as plain motion is not something this project can
 confirm. The motion topics are the ones with a working precedent.
 
+### The detection timeline
+
+Every detection saves a still, and the **Detections** button on a camera card
+opens them on a timeline: a 24-hour strip with one mark per detection, coloured
+by class, and the stills themselves underneath. Click a mark to jump to its
+still, or a still to enlarge it. Pick another day from the list.
+
+The point of the stills is not evidence, it is judgement. A count tells you the
+detector fired; a still tells you whether it fired at a person or at a bin bag
+moving in the wind, which is what decides whether the threshold is set anywhere
+near right.
+
+Turn it off per camera with **Save a still per detection** if you only want the
+events.
+
+### Disk, and how it is kept in hand
+
+Under **Settings**, one budget covers every camera. The default is **10 GB**,
+which at roughly 50 KB a still is around two hundred thousand of them — months
+for a quiet camera, days for a busy one.
+
+It is a ceiling rather than an estimate. A sweep runs every two minutes, and
+whenever the budget changes, deleting the oldest stills until the store fits.
+Lowering the budget frees the space immediately.
+
+Oldest-first applies **across all cameras, not per camera**. A budget divided
+per camera would have a busy driveway discarding this morning while a quiet back
+garden still held last month, which is the wrong trade for anyone who has to go
+looking for something. Age decides, wherever the still came from.
+
+The stills live in the shared state volume, alongside the cameras' own files:
+
+```
+<state>/events/<camera id>/<YYYY-MM-DD>/<epoch ms>-<type>-<score>.jpg
+```
+
+Everything about an event is in its path, so there is no index to fall out of
+step with the files. Delete a file and the event is gone; copy one in and it
+appears.
+
+On Unraid that volume is usually `/mnt/user/appdata/rtsp-onvif-bridge/state`,
+which commonly sits on the cache SSD. **Ten gigabytes of stills will land
+there.** If that is not where you want them, either lower the budget or mount
+`/state` somewhere with more room.
+
+Deleting a camera deletes its stills with it.
+
 ### Tuning it
 
 With `DETECT_DEBUG=1` on the controller, every camera logs the candidates it
@@ -542,6 +589,10 @@ environment (or in `docker-compose.yml`, then restart the cameras).
 | [app/camera/transcode.py](app/camera/transcode.py) | codec decision and the ffmpeg command |
 | [app/camera/hwprobe.py](app/camera/hwprobe.py) | test encode per hardware encoder |
 | [app/camera/events.py](app/camera/events.py) | ONVIF topics, subscriptions and the PullPoint queue |
+| [app/camera/recorder.py](app/camera/recorder.py) | saves a still per detection, off the main stream |
+| [app/common/clips.py](app/common/clips.py) | where stills live, and how their names carry their metadata |
+| [app/controller/clip_store.py](app/controller/clip_store.py) | lists and serves stills, and prunes them to the budget |
+| [app/controller/settings.py](app/controller/settings.py) | settings that apply to the whole bridge |
 | [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
 | [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
 | [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |

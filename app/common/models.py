@@ -64,6 +64,9 @@ DEFAULTS = {
     # ever sees motion begin shows a camera that has been moving since it was
     # plugged in, so the state has to end as well as start.
     "event_hold": 8,
+    # Save a still for every detection, so the timeline has something to
+    # show. Costs one ffmpeg run per event and a few tens of kilobytes.
+    "clips": True,
     "autodetect": True,
     "location": "any",
 }
@@ -180,6 +183,7 @@ _INT_FIELDS = {
 _FLOAT_FIELDS = {"detect_confidence"}
 _BOOL_FIELDS = {
     "enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect", "detect",
+    "clips",
 }
 _IMMUTABLE = {"id", "mac", "serial", "uuid", "created_at"}
 
@@ -292,6 +296,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "DETECT_MIN_HITS": str(cam.get("detect_min_hits") or 3),
         "DETECT_COOLDOWN": str(cam.get("detect_cooldown") or 30),
         "EVENT_HOLD": str(cam.get("event_hold") or 8),
+        "CLIPS": "1" if cam.get("clips", True) else "0",
         "AUTODETECT": "1" if cam.get("autodetect", True) else "0",
         "VIDEO_WIDTH": str(cam["width"]),
         "VIDEO_HEIGHT": str(cam["height"]),

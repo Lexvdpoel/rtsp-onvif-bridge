@@ -9,14 +9,21 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+)
 from starlette.concurrency import run_in_threadpool
 
 from ..common import models
 from . import backup as backup_mod
 from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
+from .clip_store import GIGABYTE, ClipStore
 from .docker_mgr import DockerError, DockerManager
 from .hwdetect import HardwareDetector, summarize
+from .settings import SettingsStore
 from .store import CameraStore
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
@@ -28,6 +35,8 @@ STATE_STALE_SECONDS = 45
 
 store = CameraStore(DATA_DIR)
 auth = AuthStore(DATA_DIR)
+settings = SettingsStore(DATA_DIR)
+clip_store = ClipStore(STATE_DIR)
 manager: DockerManager | None = None
 detector: HardwareDetector | None = None
 startup_error: str = ""
@@ -60,7 +69,24 @@ async def lifespan(app: FastAPI):
         # created before it finishes fall back to software encoding.
         threading.Thread(target=_detect_hardware, name="hwdetect", daemon=True).start()
         threading.Thread(target=_autostart, name="autostart", daemon=True).start()
+    threading.Thread(target=_prune_clips, name="clips", daemon=True).start()
     yield
+
+
+# Often enough that a burst cannot overshoot the budget by much, rarely enough
+# that walking the store is not a constant cost.
+PRUNE_SECONDS = 120
+
+
+def _prune_clips():
+    """Keep the detection stills inside the configured budget, for ever."""
+    while True:
+        try:
+            budget = settings.all()["clip_budget_gb"]
+            clip_store.prune(int(budget * GIGABYTE))
+        except Exception as exc:  # noqa: BLE001 - a full disk must not be fatal
+            print(f"[clips] pruning failed: {exc}")
+        time.sleep(PRUNE_SECONDS)
 
 
 def _detect_hardware():
@@ -373,6 +399,9 @@ def delete_camera(cam_id: str):
         except DockerError as exc:
             print(f"[controller] cleanup of '{cam['name']}' failed: {exc}")
     store.delete(cam_id)
+    # The stills outlive the container otherwise, and nothing would ever come
+    # back for them.
+    clip_store.forget(cam_id)
     return {"deleted": cam_id}
 
 
@@ -507,6 +536,60 @@ def list_orphans():
     mgr = _require_manager()
     known = {cam["id"] for cam in store.list()}
     return {"orphans": mgr.orphans(known)}
+
+
+# ------------------------------------------------------------ detection stills
+
+
+@app.get("/api/cameras/{cam_id}/events")
+def camera_event_days(cam_id: str):
+    """Which days this camera has stills for, and how big the store is."""
+    _get_or_404(cam_id)
+    budget = settings.all()["clip_budget_gb"]
+    return {
+        "days": clip_store.days(cam_id),
+        "usage": clip_store.last_prune or {"budget": int(budget * GIGABYTE)},
+    }
+
+
+@app.get("/api/cameras/{cam_id}/events/{day}")
+def camera_events(cam_id: str, day: str):
+    _get_or_404(cam_id)
+    return {"day": day, "events": clip_store.events(cam_id, day)}
+
+
+@app.get("/api/cameras/{cam_id}/events/{day}/{name}")
+def camera_event_image(cam_id: str, day: str, name: str):
+    _get_or_404(cam_id)
+    path = clip_store.path_of(cam_id, day, name)
+    if not path:
+        raise HTTPException(status_code=404, detail="No such still")
+    # Immutable once written, and named after the moment it was taken, so a
+    # browser may keep it as long as it likes.
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000"})
+
+
+# --------------------------------------------------------------------- settings
+
+
+@app.get("/api/settings")
+def read_settings():
+    current = dict(settings.all())
+    current["clips"] = clip_store.last_prune or {}
+    return current
+
+
+@app.put("/api/settings")
+async def write_settings(request: Request):
+    payload = await request.json()
+    current = await run_in_threadpool(settings.update, payload)
+    # Applied at once rather than at the next sweep: someone who has just
+    # lowered the budget wants to see the space come back.
+    await run_in_threadpool(
+        clip_store.prune, int(current["clip_budget_gb"] * GIGABYTE)
+    )
+    return {**current, "clips": clip_store.last_prune}
 
 
 @app.delete("/api/orphans/{name}")
