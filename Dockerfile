@@ -59,19 +59,40 @@ RUN pip install --no-cache-dir -r requirements.txt
 # so the venv is built on Debian's python3; and it is not on PyPI in any current
 # form, so it comes from a pinned commit.
 #
+# One of its pinned requirements, pyunifiprotect, was renamed to uiprotect and
+# removed from PyPI, so the requirements no longer install as published. The
+# successor is swapped in and the old import path given back with a shim:
+# unifi/main.py is the only place that imports it, and only for the top-level
+# ProtectApiClient.
+#
 # The install is allowed to fail. It is an opt-in feature, the upstream project
 # pins nothing and pulls one dependency straight from a branch archive, so a
 # break there should not cost everyone else their image. A camera set to UniFi
-# mode without it says so plainly instead of failing quietly.
+# mode without it says so plainly instead of failing quietly. The import is
+# checked here so a half-working install fails at build time, not at adoption.
 ARG UNIFI_CAM_PROXY_REF=cc6d3fc7cdae9f1dfce575627089632aec696403
 RUN set -eu; \
     python3 -m venv /opt/unifi-venv; \
     if curl -fsSL -o /tmp/ucp-requirements.txt \
-        "https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/${UNIFI_CAM_PROXY_REF}/requirements.txt" \
-       && /opt/unifi-venv/bin/pip install --no-cache-dir -r /tmp/ucp-requirements.txt \
+        "https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/${UNIFI_CAM_PROXY_REF}/requirements.txt"; \
+    then \
+        sed -i '/^pyunifiprotect/d' /tmp/ucp-requirements.txt; \
+        echo "uiprotect" >> /tmp/ucp-requirements.txt; \
+    fi; \
+    if /opt/unifi-venv/bin/pip install --no-cache-dir -r /tmp/ucp-requirements.txt \
        && /opt/unifi-venv/bin/pip install --no-cache-dir --no-deps \
         "https://github.com/keshavdv/unifi-cam-proxy/archive/${UNIFI_CAM_PROXY_REF}.tar.gz"; \
     then \
+        printf '%s\n' \
+            '"""Compatibility shim.' \
+            '' \
+            'unifi-cam-proxy imports pyunifiprotect, which was renamed to uiprotect' \
+            'and removed from PyPI. Only ProtectApiClient is used, from the top level.' \
+            '"""' \
+            'from uiprotect import *  # noqa: F401,F403' \
+            'from uiprotect import ProtectApiClient  # noqa: F401' \
+            > "$(/opt/unifi-venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pyunifiprotect.py"; \
+        /opt/unifi-venv/bin/python -c 'import unifi.main; print("unifi-cam-proxy imports cleanly")'; \
         echo "unifi-cam-proxy installed at ${UNIFI_CAM_PROXY_REF}"; \
     else \
         echo "WARNING: unifi-cam-proxy could not be installed; UniFi mode will be unavailable"; \

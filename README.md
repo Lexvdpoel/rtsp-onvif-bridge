@@ -389,11 +389,27 @@ arguments through unchanged.
 
 `unifi-cam-proxy` is installed from a pinned commit into a virtualenv of its own,
 because its dependencies are unpinned and would otherwise be resolved against
-FastAPI's. That install is allowed to fail during the build: it is an opt-in
-feature and upstream pulls one dependency straight from a branch archive, so a
-break there should not cost you the whole image. If it did fail, the build says
-so, and a camera set to UniFi mode reports it instead of failing quietly —
-everything else keeps working.
+FastAPI's. One of them, `pyunifiprotect`, has since been renamed to `uiprotect`
+and removed from PyPI, so the successor is installed and the old import path is
+given back with a small shim.
+
+That install is allowed to fail during the build rather than take the whole image
+with it, so watch for it. On success the build prints:
+
+```
+unifi-cam-proxy imports cleanly
+unifi-cam-proxy installed at cc6d3fc…
+```
+
+On failure it prints a warning instead, and a camera set to UniFi mode says so
+rather than failing quietly. To see why it failed, run the install by hand:
+
+```bash
+docker run --rm -it rtsp-onvif-bridge:latest sh -c '
+  curl -fsSL -o /tmp/r.txt https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/cc6d3fc7cdae9f1dfce575627089632aec696403/requirements.txt
+  sed -i "/^pyunifiprotect/d" /tmp/r.txt; echo uiprotect >> /tmp/r.txt
+  python3 -m venv /tmp/v && /tmp/v/bin/pip install -r /tmp/r.txt'
+```
 
 ### Object detection
 
