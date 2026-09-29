@@ -242,6 +242,31 @@ def _with_defaults(payload: dict) -> dict:
     return payload
 
 
+def _reassign_mac_if_mode_changed(cam_id: str, cam: dict) -> dict:
+    """UniFi mode needs a Ubiquiti address, ONVIF mode a private one.
+
+    The MAC is otherwise fixed for life, but the OUI has to match the mode: a
+    console will not take a camera whose address belongs to nobody. Switching
+    mode is a deliberate act and means re-adopting anyway, so the address moves
+    with it — and the DHCP reservation has to be updated to match.
+    """
+    wanted = models.mac_prefix_for(cam)
+    if cam.get("mac", "").lower().startswith(wanted.lower()):
+        return cam
+
+    taken = {other["mac"] for other in store.list() if other["id"] != cam_id}
+    cam = dict(cam, mac=models.assign_mac(cam, taken))
+    store.upsert(cam)
+    print(
+        f"[controller] '{cam['name']}' switched to {cam['mode']} mode; "
+        f"its MAC is now {cam['mac']}"
+    )
+    if manager is not None:
+        # The old identity no longer applies, so any adoption goes with it.
+        manager.purge(cam)
+    return cam
+
+
 def _get_or_404(cam_id: str) -> dict:
     cam = store.get(cam_id)
     if cam is None:
@@ -327,6 +352,7 @@ async def update_camera(cam_id: str, request: Request):
 
 def _update_camera_sync(cam_id: str, payload: dict):
     updated = store.update(cam_id, payload)
+    updated = _reassign_mac_if_mode_changed(cam_id, updated)
     mgr = _require_manager()
     try:
         if updated.get("enabled"):

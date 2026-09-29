@@ -337,6 +337,13 @@ announces itself straight to it every ten seconds, until something adopts it.
 So with cameras on 10.51.100.x and Protect on 10.51.0.x, leave discovery on and
 set the console address to your Protect host. Nothing else changes.
 
+In UniFi mode the camera's MAC address comes from a Ubiquiti prefix rather than
+the private one the ONVIF cameras use. A console decides what a device is partly
+from its OUI, and an address registered to nobody is not something a UniFi camera
+would ever have. Switching an existing camera to UniFi mode therefore moves its
+address — **update the DHCP reservation**, since the old one no longer matches.
+The log says so when it happens.
+
 The camera offers itself in both generations of the discovery protocol — v1 and
 v2 — because a console only understands a reply in the version it asked in, and
 which one it uses depends on its firmware. The log says which was answered:
@@ -534,6 +541,7 @@ Click **Logs** on a camera card — most answers are there.
 
 | Symptom | Cause |
 |---|---|
+| The camera answers probes but never appears in Protect | Check what the log says it answered. If nothing is answered at all, UDP 10001 is not reaching the camera. If it answers and Protect still shows nothing, confirm the reply is well formed from another machine: `nmap -sU -p 10001 --script ubiquiti-discovery <camera ip>`. A camera that shows up there but not in Protect is being rejected by the console, not by the network. |
 | `waiting-for-dhcp`, then `No DHCP lease` | Wrong `MACVLAN_PARENT`, or the parent sits on a VLAN with no DHCP server. Check with `ip -br link` and see whether the request reaches your DHCP server. |
 | The camera does not show up in the NVR's scan | WS-Discovery is multicast and does not cross VLAN boundaries or routers. Add the IP by hand. |
 | Adoption fails with an auth error | Test with **Require authentication** off. Some NVRs send only HTTP Basic, others only WS-UsernameToken — both are supported, but a typo in the password is the usual cause. |

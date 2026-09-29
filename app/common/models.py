@@ -12,6 +12,13 @@ from urllib.parse import urlsplit
 # range so camera MACs are easy to spot in the DHCP server's lease table.
 MAC_PREFIX = "02:1f"
 
+# UniFi mode needs a MAC that looks like Ubiquiti hardware. A console decides
+# what a device is partly from its OUI, and 02:1f is a locally administered
+# address registered to nobody, which a UniFi camera would never have. This is
+# a real Ubiquiti prefix; the remaining bytes still come from the camera's own
+# identity, so the address stays stable and unique.
+UNIFI_MAC_PREFIX = "f4:92:bf"
+
 _SAFE_HOSTNAME = re.compile(r"[^a-zA-Z0-9-]+")
 
 DEFAULTS = {
@@ -72,15 +79,21 @@ DEFAULTS = {
 }
 
 
-def generate_mac(identity: str) -> str:
+def generate_mac(identity: str, prefix: str = MAC_PREFIX) -> str:
     """Deterministic MAC for an identity string.
 
     Same identity in, same MAC out, so a camera that is deleted and added again
     lands back on its existing DHCP reservation.
     """
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    tail = [digest[i : i + 2] for i in range(0, 8, 2)]
-    return ":".join(MAC_PREFIX.split(":") + tail)
+    parts = prefix.split(":")
+    tail = [digest[i : i + 2] for i in range(0, 2 * (6 - len(parts)), 2)]
+    return ":".join(parts + tail)
+
+
+def mac_prefix_for(cam: dict) -> str:
+    """Which OUI this camera's address comes from."""
+    return UNIFI_MAC_PREFIX if cam.get("mode") == "unifi" else MAC_PREFIX
 
 
 def normalize_mac(value: str) -> str:
@@ -118,14 +131,15 @@ def identity_key(cam: dict) -> str:
 def assign_mac(cam: dict, taken: set[str] | None = None) -> str:
     """Pick this camera's MAC, avoiding one already in use by another camera."""
     identity = identity_key(cam)
-    mac = generate_mac(identity)
+    prefix = mac_prefix_for(cam)
+    mac = generate_mac(identity, prefix)
     taken = {m.lower() for m in (taken or set())}
     # Two records pointing at the same source would otherwise collide, and two
     # NICs sharing a MAC on one LAN break both of them.
     suffix = 0
     while mac.lower() in taken:
         suffix += 1
-        mac = generate_mac(f"{identity}#{suffix}")
+        mac = generate_mac(f"{identity}#{suffix}", prefix)
     return mac
 
 

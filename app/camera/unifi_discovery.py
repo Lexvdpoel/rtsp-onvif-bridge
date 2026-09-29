@@ -44,6 +44,8 @@ ESSID = 13
 WMODE = 14
 WEBUI = 15
 SYSTEM_ID = 16
+MODEL = 20
+MODEL_SHORT = 21
 DEVICE_ID = 32
 DEFAULT_CREDENTIALS = 44
 PRIMARY_ADDRESS = 47
@@ -96,6 +98,10 @@ def build_response(mac: str, ip: str, hostname: str, identity: dict,
         # protocol flag then port: 1 means the management UI speaks HTTPS.
         _field(WEBUI, struct.pack(">HH", 1, https_port)),
         _field(SYSTEM_ID, struct.pack("<H", int(identity["sysid"], 0))),
+        # Real devices name themselves here as well; a console showing a model
+        # in its adoption list is reading these.
+        _field(MODEL, identity["model"].replace("_", "-").encode()),
+        _field(MODEL_SHORT, identity["display"].encode()),
         _field(DEFAULT_CREDENTIALS, struct.pack("B", 1)),
     ])
     header_version, command = REPLY_HEADERS.get(version, REPLY_HEADERS[1])
