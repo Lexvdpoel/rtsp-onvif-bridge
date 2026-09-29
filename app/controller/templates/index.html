@@ -333,15 +333,27 @@
             <label for="f-proxy" style="margin:0">Relay the stream through this camera's IP</label>
           </div>
           <div>
-            <label for="f-transport">RTSP transport</label>
+            <label for="f-transport">RTSP transport to the source</label>
             <select id="f-transport" name="rtsp_transport">
               <option value="tcp">TCP</option>
               <option value="udp">UDP</option>
             </select>
             <div class="hint">
-              Applies both ways: how this camera reads its source, and what the relay
-              offers whoever reads from it. TCP opens no UDP listener at all, which is
-              what you want when the stream crosses a router.
+              How this camera reads its own source. TCP is the safe choice across a router.
+            </div>
+          </div>
+          <div>
+            <label for="f-offer">Transport offered to the NVR</label>
+            <select id="f-offer" name="rtsp_offer">
+              <option value="both">Both — the NVR picks</option>
+              <option value="tcp">TCP only</option>
+              <option value="udp">UDP only</option>
+            </select>
+            <div class="hint">
+              Leave this on both unless an NVR picks badly. Narrowing it to TCP stops the
+              relay opening a UDP listener at all, which fixes an NVR that chooses UDP over
+              a routed network — and breaks one that reads TCP poorly. Multicast is never
+              offered.
             </div>
           </div>
           <div class="wide hint">

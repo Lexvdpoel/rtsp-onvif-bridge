@@ -69,6 +69,7 @@ class Config:
     require_auth: bool
     proxy: bool
     rtsp_transport: str
+    rtsp_offer: str
     snapshot_enabled: bool
     autodetect: bool
     detect: bool
@@ -117,6 +118,7 @@ class Config:
             require_auth=_env_bool("REQUIRE_AUTH", True),
             proxy=_env_bool("PROXY", True),
             rtsp_transport=_env("RTSP_TRANSPORT", "tcp"),
+            rtsp_offer=_env("RTSP_OFFER", "both"),
             snapshot_enabled=_env_bool("SNAPSHOT", True),
             autodetect=_env_bool("AUTODETECT", True),
             detect=_env_bool("DETECT", False),
@@ -379,7 +381,8 @@ def main() -> int:
     relay_proc = None
     if cfg.proxy:
         paths = _relay_paths(cfg, state)
-        config_path = mediamtx.write_config(paths, cfg.rtsp_port, cfg.rtsp_transport)
+        config_path = mediamtx.write_config(paths, cfg.rtsp_port,
+                                            cfg.rtsp_transport, cfg.rtsp_offer)
         relay_proc = mediamtx.start(config_path)
         if relay_proc is None:
             cfg.proxy = False  # fall back to handing out the upstream URL

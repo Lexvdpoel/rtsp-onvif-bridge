@@ -30,6 +30,10 @@ DEFAULTS = {
     "require_auth": True,
     "proxy": True,
     "rtsp_transport": "tcp",
+    # What the relay offers whoever reads from it. Separate from the setting
+    # above on purpose: an NVR that reads badly over TCP and a source that
+    # streams badly over UDP are different problems.
+    "rtsp_offer": "both",
     # Codec handed to the NVR. "copy" relays whatever the source sends; h264 or
     # h265 re-encode only when the source is not already that codec.
     "output_codec": "copy",
@@ -235,6 +239,10 @@ def validate(cam: dict) -> list[str]:
             )
     if cam.get("source_mac") and not normalize_mac(cam["source_mac"]):
         errors.append("Source MAC must be 12 hex digits, e.g. a0:bb:3e:11:22:33.")
+    if cam.get("rtsp_transport") not in ("tcp", "udp"):
+        errors.append("RTSP transport to the source must be tcp or udp.")
+    if cam.get("rtsp_offer") not in ("both", "tcp", "udp"):
+        errors.append("What the relay offers must be both, tcp or udp.")
     if cam.get("output_codec") not in ("copy", "h264", "h265"):
         errors.append("Output codec must be copy, h264 or h265.")
     if cam.get("hwaccel") not in ("auto", "none", "vaapi", "qsv", "nvenc"):
@@ -270,6 +278,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "REQUIRE_AUTH": "1" if cam["require_auth"] else "0",
         "PROXY": "1" if cam["proxy"] else "0",
         "RTSP_TRANSPORT": cam.get("rtsp_transport") or "tcp",
+        "RTSP_OFFER": cam.get("rtsp_offer") or "both",
         "OUTPUT_CODEC": cam.get("output_codec") or "copy",
         "HWACCEL": cam.get("hwaccel") or "auto",
         "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),

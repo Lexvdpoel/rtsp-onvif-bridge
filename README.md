@@ -283,6 +283,34 @@ precisely so that editing a URL cannot silently invalidate a reservation.
 If two cameras point at the same source, the second automatically gets a different
 MAC: two NICs sharing an address on one LAN break both of them.
 
+## RTSP transport
+
+Two settings, one per end of the relay, and they are deliberately separate.
+
+**Transport to the source** is how this camera reads the real one. TCP is the
+safe default: it survives a router, where UDP loses packets quietly.
+
+**Transport offered to the NVR** is what the relay hands out. Leave it on
+*both* and let the NVR choose, which is what MediaMTX does on its own and what
+nearly every client copes with. Narrow it only when a client picks badly:
+
+* An NVR that chooses UDP across a routed network and shows a stalled picture
+  wants **TCP only** -- with no UDP listener open, it cannot choose wrong.
+* An NVR that reads TCP poorly drops and reconnects every few seconds, which
+  looks like a stuttering picture. That one wants **UDP only** or *both*.
+
+The relay's own startup line says which it ended up with:
+
+```
+INF [RTSP] listener opened on :554 (TCP), :8000 (UDP/RTP), :8001 (UDP/RTCP)
+```
+
+Multicast is never offered; nothing here reads over it.
+
+These were one setting for a while, and that was a mistake worth recording: a
+source that streams badly over UDP and an NVR that reads badly over TCP are two
+different problems, and one control meant fixing either one broke the other.
+
 ## Object detection and ONVIF events
 
 Cameras that send pixels and nothing else have no way to tell an NVR that

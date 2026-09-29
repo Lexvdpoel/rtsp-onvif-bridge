@@ -52,26 +52,32 @@ def write_transcode_script(name: str, args: list[str], script_builder) -> str:
     return path
 
 
-def _server_transports(transport: str) -> str:
+def _server_transports(offer: str) -> str:
     """What the relay offers to whoever reads from it.
 
-    MediaMTX defaults to offering UDP, multicast and TCP, and lets the client
-    pick. Forcing TCP towards the source while the relay still hands out UDP is
-    a half-measure: on a routed network the UDP leg is the one that drops, and
-    it drops as stalled live view rather than as an error. So the setting
-    applies to both ends, and the UDP listeners are not opened at all when TCP
-    is chosen -- the relay's own startup line then says which it is.
+    Deliberately separate from the transport used towards the source. They were
+    one setting for a while, and that was a mistake: an NVR that reads badly
+    over TCP and a source that streams badly over UDP are two different
+    problems, and tying them together means fixing one breaks the other.
+
+    "both" is the default because it is what MediaMTX does on its own: the
+    client picks, and a client that cannot do one falls back to the other.
+    Narrow it only when a client picks badly.
+
+    Multicast is never offered. Nothing here reads over it and it only opens
+    listeners nobody uses.
     """
-    if (transport or "tcp").lower() == "udp":
-        return (
-            "protocols: [udp, tcp]\n"
-            "rtpAddress: :8000\n"
-            "rtcpAddress: :8001\n"
-        )
-    return "protocols: [tcp]\n"
+    choice = (offer or "both").lower()
+    udp_listeners = "rtpAddress: :8000\nrtcpAddress: :8001\n"
+    if choice == "tcp":
+        return "protocols: [tcp]\n"
+    if choice == "udp":
+        return "protocols: [udp]\n" + udp_listeners
+    return "protocols: [udp, tcp]\n" + udp_listeners
 
 
-def write_config(paths: dict[str, dict], rtsp_port: int, transport: str = "tcp") -> str:
+def write_config(paths: dict[str, dict], rtsp_port: int, transport: str = "tcp",
+                 offer: str = "both") -> str:
     """`paths` maps a path name onto either {'source': url} or {'script': path}."""
     blocks = ""
     for name, spec in paths.items():
@@ -97,7 +103,7 @@ def write_config(paths: dict[str, dict], rtsp_port: int, transport: str = "tcp")
         "srt: no\n"
         "rtsp: yes\n"
         f"rtspAddress: :{rtsp_port}\n"
-        + _server_transports(transport)
+        + _server_transports(offer)
         + "paths:\n" + blocks
     )
     with open(CONFIG_PATH, "w") as fh:
