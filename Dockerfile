@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
         curl \
+        openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # VA-API drivers, so hardware encoding can use an Intel or AMD render node.

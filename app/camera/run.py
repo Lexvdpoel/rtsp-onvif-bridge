@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import mediamtx, net, probe as probe_mod, transcode
+from . import mediamtx, net, probe as probe_mod, transcode, unifi
 from .onvif_server import serve as serve_onvif
 from .stats import StatsCollector
 from .wsdiscovery import DiscoveryResponder
@@ -72,6 +72,11 @@ class Config:
     height_sub: int
     fps_sub: int
     bitrate_sub: int
+    mode: str
+    unifi_host: str
+    unifi_token: str
+    unifi_extra_args: str
+    mac_hint: str
     output_codec: str
     hwaccel: str
     encode_bitrate: int
@@ -112,6 +117,11 @@ class Config:
             height_sub=_env_int("VIDEO_HEIGHT_SUB", 360),
             fps_sub=_env_int("VIDEO_FPS_SUB", 15),
             bitrate_sub=_env_int("VIDEO_BITRATE_SUB", 512),
+            mode=_env("MODE", "onvif"),
+            unifi_host=_env("UNIFI_HOST"),
+            unifi_token=_env("UNIFI_TOKEN"),
+            unifi_extra_args=_env("UNIFI_EXTRA_ARGS"),
+            mac_hint=_env("CAM_MAC"),
             output_codec=_env("OUTPUT_CODEC", "copy"),
             hwaccel=_env("HWACCEL", "none"),
             encode_bitrate=_env_int("ENCODE_BITRATE", 4096),
@@ -177,6 +187,7 @@ def _status_payload(cfg: Config, state: State) -> dict:
         "detected": state.detected,
         "stats": state.stats,
         "transcode": state.transcode,
+        "mode": cfg.mode,
         "advertised": {
             "encoding": cfg.encoding,
             "width": cfg.width,
@@ -318,11 +329,18 @@ def main() -> int:
 
     # 2. ONVIF + discovery ------------------------------------------------
     # Brought up before the relay so the device answers straight away; the
-    # stream URI it hands out works as soon as the relay follows.
-    httpd = serve_onvif(cfg, state)
-    discovery = DiscoveryResponder(cfg, state)
-    discovery.start()
-    print(f"[camera] ONVIF ready at http://{state.ip}:{cfg.onvif_port}/onvif/device_service")
+    # stream URI it hands out works as soon as the relay follows. In UniFi mode
+    # Protect speaks its own protocol, so none of this applies.
+    httpd = None
+    discovery = None
+    if cfg.mode != "unifi":
+        httpd = serve_onvif(cfg, state)
+        discovery = DiscoveryResponder(cfg, state)
+        discovery.start()
+        print(
+            f"[camera] ONVIF ready at "
+            f"http://{state.ip}:{cfg.onvif_port}/onvif/device_service"
+        )
 
     # 3. detect the source ------------------------------------------------
     # Whether a transcode is needed depends on the source codec, so this has to
@@ -346,6 +364,23 @@ def main() -> int:
         collector = StatsCollector()
         collector.start()
 
+    # 4b. UniFi Protect ----------------------------------------------------
+    unifi_proc = None
+    unifi_args: list[str] = []
+    if cfg.mode == "unifi":
+        # Point the proxy at our own relay when it is running, so the codec
+        # conversion and hardware encoding still apply on the way to Protect.
+        stream_url = (
+            f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy else cfg.source_url
+        )
+        try:
+            cert = unifi.ensure_certificate(cfg.id, _env("STATE_DIR", "/state"))
+            unifi_args = unifi.build_args(cfg, state, cert, stream_url)
+            unifi_proc = unifi.start(unifi_args)
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
+            state.message = f"UniFi proxy failed to start: {exc}"
+            print(f"[unifi] {state.message}")
+
     state.status = "running"
     state.message = ""
     state_file.write(_status_payload(cfg, state))
@@ -368,6 +403,9 @@ def main() -> int:
         if relay_proc is not None and relay_proc.poll() is not None:
             print("[camera] RTSP relay exited; restarting it")
             relay_proc = mediamtx.start()
+        if unifi_proc is not None and unifi_proc.poll() is not None:
+            print("[unifi] proxy exited; restarting it")
+            unifi_proc = unifi.start(unifi_args)
         if dhcp_proc is not None and dhcp_proc.poll() is not None:
             print("[camera] DHCP client exited; restarting it")
             dhcp_proc = net.start_dhcp(cfg.hostname, "/tmp/lease.env")
@@ -385,9 +423,11 @@ def main() -> int:
 
     if collector is not None:
         collector.stop()
-    discovery.stop()
-    httpd.shutdown()
-    for proc in (relay_proc, dhcp_proc):
+    if discovery is not None:
+        discovery.stop()
+    if httpd is not None:
+        httpd.shutdown()
+    for proc in (relay_proc, dhcp_proc, unifi_proc):
         if proc is not None and proc.poll() is None:
             proc.terminate()
     state.status = "stopped"

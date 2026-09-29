@@ -256,6 +256,51 @@
       <h2 id="editTitle" style="margin:0 0 18px;font-size:17px;">Add camera</h2>
 
       <fieldset>
+        <legend>How this camera is published</legend>
+        <div class="form-grid">
+          <div class="wide">
+            <label for="f-mode">Mode</label>
+            <select id="f-mode" name="mode">
+              <option value="onvif">ONVIF device — works with any NVR</option>
+              <option value="unifi">UniFi Protect — adopted as a native camera</option>
+            </select>
+            <div class="hint">
+              ONVIF is the built-in device this bridge serves; UniFi Protect accepts it in its
+              reduced "generic" mode. UniFi mode instead runs unifi-cam-proxy, which speaks
+              Protect's own protocol, so the camera is adopted like a real UniFi one. Switching
+              mode means re-adopting the camera in your NVR.
+            </div>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset id="unifiFields" hidden>
+        <legend>UniFi Protect</legend>
+        <div class="form-grid">
+          <div>
+            <label for="f-unifi-host">Protect console address</label>
+            <input type="text" id="f-unifi-host" name="unifi_host" placeholder="192.168.1.1">
+          </div>
+          <div>
+            <label for="f-unifi-token">Adoption token</label>
+            <input type="text" id="f-unifi-token" name="unifi_token" autocomplete="off">
+          </div>
+          <div class="wide">
+            <label for="f-unifi-extra">Extra proxy arguments (optional)</label>
+            <input type="text" id="f-unifi-extra" name="unifi_extra_args"
+                   placeholder="--name &quot;Front door&quot;">
+          </div>
+          <div class="wide hint">
+            Get the token from Protect under <em>Devices &rarr; Add Devices &rarr; Third-party
+            camera</em>; it is valid for 60 minutes and is only needed the first time. After
+            adoption the camera is recognised by a client certificate, which is generated here
+            and kept with the camera's state — so it stays adopted across restarts, and deleting
+            the camera means adopting it again.
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
         <legend>Source</legend>
         <div class="form-grid">
           <div class="wide">
@@ -287,7 +332,7 @@
         </div>
       </fieldset>
 
-      <fieldset>
+      <fieldset id="onvifFields">
         <legend>ONVIF device</legend>
         <div class="form-grid">
           <div>
@@ -727,6 +772,7 @@ function render() {
           ${field("RTSP stream", runtime.rtsp_url, true)}
           ${field("Source", cam.source_url, true)}
           ${field("Detected stream", detectedText(cam))}
+          ${field("Mode", cam.mode === "unifi" ? "UniFi Protect (native)" : "ONVIF")}
           ${field("Output", outputText(cam))}
           ${field("Encoder", encoderText(cam))}
           ${field("Rate control", rateModeText(cam))}
@@ -920,6 +966,16 @@ document.addEventListener("mousemove", (event) => {
 
 // --------------------------------------------------------------------- editing
 
+function applyMode() {
+  const unifi = $("#f-mode").value === "unifi";
+  // In UniFi mode Protect speaks its own protocol, so the ONVIF credentials and
+  // ports play no part.
+  $("#unifiFields").hidden = !unifi;
+  $("#onvifFields").hidden = unifi;
+}
+
+$("#f-mode").addEventListener("change", applyMode);
+
 function fillForm(cam) {
   const form = $("#editForm");
   form.reset();
@@ -936,6 +992,7 @@ async function openEdit(cam) {
   editingId = cam ? cam.id : null;
   $("#editTitle").textContent = cam ? "Edit camera" : "Add camera";
   fillForm(cam);
+  applyMode();
   if (cam) {
     try {
       const secret = await api(`/api/cameras/${cam.id}/password`);

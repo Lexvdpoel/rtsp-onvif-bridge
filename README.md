@@ -296,6 +296,43 @@ Lukt adoptie niet, zet dan tijdelijk **Require authentication** uit en probeer
 opnieuw — zo zie je meteen of het probleem in de credentials zit of ergens anders.
 Zet het daarna weer aan.
 
+## Modus per camera: ONVIF of UniFi Protect
+
+Elke camera kiest zelf hoe hij zich aanbiedt.
+
+| Modus | Wat het doet |
+|---|---|
+| **ONVIF** (standaard) | De ingebouwde ONVIF-device van deze bridge. Werkt met elke NVR. UniFi Protect neemt hem aan in de beperkte "generic"-modus: opnemen werkt, AI-detecties niet. |
+| **UniFi Protect** | Draait `unifi-cam-proxy`, dat het eigen protocol van Protect spreekt. De camera wordt geadopteerd als een echt UniFi-apparaat. |
+
+In UniFi-modus wordt de ONVIF-service niet gestart — Protect gebruikt hem toch
+niet. De RTSP-relay blijft wel draaien, dus je codec-conversie en
+hardware-encoding werken gewoon door: de proxy leest uit de lokale relay.
+
+### Een camera adopteren in Protect
+
+1. Zet de modus op **UniFi Protect** en vul het adres van je console in.
+2. Haal in Protect een token op onder **Devices → Add Devices → Third-party
+   camera**. Dat is 60 minuten geldig.
+3. Plak het token in het formulier en sla op.
+
+Het token is alleen de eerste keer nodig. Daarna herkent Protect de camera aan
+een clientcertificaat, dat de bridge zelf genereert — je hoeft dus geen echte
+UniFi-camera leeg te trekken voor een sleutel. Dat certificaat staat bij de
+status van de camera in `state/certs/`, zodat het een herstart overleeft.
+Verwijder je de camera, dan is het weg en moet je opnieuw adopteren.
+
+Ken je de proxy en mis je een optie, dan kun je in **Extra proxy arguments**
+losse argumenten meegeven; die worden ongewijzigd doorgegeven.
+
+### Wat dit niet doet
+
+Smart detections — persoon, voertuig, dier, pakket — zitten hier nog niet in. De
+weg daarheen is de `EventSmartDetect`-API van Protect, en die staat alleen open
+voor een camera die als native apparaat is geadopteerd; die modus is daarmee de
+voorwaarde, niet de oplossing. Er moet ook nog een bron van detecties komen: de
+AI van de broncamera, of een lokale detector.
+
 ## Uitgaande codec kiezen
 
 Per camera stel je in wat de NVR moet krijgen:
@@ -439,6 +476,7 @@ camera-container (of in `docker-compose.yml`, waarna je de camera's herstart).
 | [app/camera/stats.py](app/camera/stats.py) | doorvoermeting en CBR/VBR-afleiding |
 | [app/camera/transcode.py](app/camera/transcode.py) | codec-beslissing en ffmpeg-commando |
 | [app/camera/hwprobe.py](app/camera/hwprobe.py) | test-encode per hardware-encoder |
+| [app/camera/unifi.py](app/camera/unifi.py) | certificaat en aanroep voor unifi-cam-proxy |
 | [app/controller/hwdetect.py](app/controller/hwdetect.py) | draait de probe, cachet en kiest |
 | [app/common/models.py](app/common/models.py) | cameramodel, MAC-generatie, validatie |
 

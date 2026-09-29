@@ -22,6 +22,13 @@ DEFAULTS = {
     # virtual MAC from: it survives the source changing IP or password.
     "source_mac": "",
     "enabled": True,
+    # How this camera presents itself to the NVR.
+    #   onvif - the built-in ONVIF device (works with any NVR)
+    #   unifi - unifi-cam-proxy, adopted by UniFi Protect as a native camera
+    "mode": "onvif",
+    "unifi_host": "",
+    "unifi_token": "",
+    "unifi_extra_args": "",
     "onvif_port": 80,
     "rtsp_port": 554,
     "username": "admin",
@@ -192,6 +199,10 @@ def validate(cam: dict) -> list[str]:
         errors.append("RTSP port must be between 1 and 65535.")
     if cam.get("require_auth") and not cam.get("password"):
         errors.append("A password is required when authentication is enabled.")
+    if cam.get("mode") not in ("onvif", "unifi"):
+        errors.append("Mode must be onvif or unifi.")
+    if cam.get("mode") == "unifi" and not (cam.get("unifi_host") or "").strip():
+        errors.append("UniFi mode needs the address of your Protect console.")
     if cam.get("source_mac") and not normalize_mac(cam["source_mac"]):
         errors.append("Source MAC must be 12 hex digits, e.g. a0:bb:3e:11:22:33.")
     if cam.get("output_codec") not in ("copy", "h264", "h265"):
@@ -229,6 +240,10 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "REQUIRE_AUTH": "1" if cam["require_auth"] else "0",
         "PROXY": "1" if cam["proxy"] else "0",
         "RTSP_TRANSPORT": cam.get("rtsp_transport") or "tcp",
+        "MODE": cam.get("mode") or "onvif",
+        "UNIFI_HOST": cam.get("unifi_host") or "",
+        "UNIFI_TOKEN": cam.get("unifi_token") or "",
+        "UNIFI_EXTRA_ARGS": cam.get("unifi_extra_args") or "",
         "OUTPUT_CODEC": cam.get("output_codec") or "copy",
         "HWACCEL": cam.get("hwaccel") or "auto",
         "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),
