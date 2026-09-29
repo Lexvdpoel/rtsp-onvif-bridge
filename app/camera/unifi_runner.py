@@ -15,6 +15,8 @@ import asyncio
 import os
 import sys
 
+from . import unifi_logfilter
+
 DETECT_PORT = int(os.environ.get("DETECT_BRIDGE_PORT", "8099"))
 
 # How long a motion event stays open after the last detection. It has to be
@@ -110,7 +112,11 @@ def build_camera_class():
 def main() -> int:
     from unifi import main as unifi_main
 
-    unifi_main.CAMS["rtsp"] = build_camera_class()
+    camera_class = build_camera_class()
+    unifi_main.CAMS["rtsp"] = camera_class
+    # The filter goes on before the proxy builds its loggers; getLogger
+    # hands back the same object either way, so the names are enough.
+    unifi_logfilter.install(camera_class.__name__, "Core")
     return unifi_main.main()
 
 
