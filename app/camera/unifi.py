@@ -78,18 +78,11 @@ def ensure_certificate(cam_id: str, state_dir: str) -> str:
 
 
 def build_args(cfg, state, cert: str, stream_url: str,
-               token: str | None = None, host: str | None = None,
-               sub_url: str = "") -> list[str]:
+               token: str | None = None, host: str | None = None) -> list[str]:
     """The unifi-cam-proxy invocation for this camera.
 
     token and host normally come from the adoption payload Protect pushed to us;
     without them the values configured by hand are used.
-
-    sub_url is the second stream. The proxy takes up to three sources, in
-    descending quality, and maps them onto the channels Protect asks for; given
-    one it serves that same stream on all three. A real camera answers the low
-    channels with its sub stream, and Protect leans on those, so handing it only
-    the main stream means every channel carries full resolution.
     """
     args = [
         # Our own entrypoint, run by the interpreter that has unifi-cam-proxy:
@@ -131,8 +124,6 @@ def build_args(cfg, state, cert: str, stream_url: str,
             )
         args += extra
     args += ["rtsp", "-s", stream_url]
-    if sub_url and sub_url != stream_url:
-        args.append(sub_url)
     return args
 
 
