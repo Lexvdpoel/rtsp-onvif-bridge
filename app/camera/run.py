@@ -337,6 +337,16 @@ def main() -> int:
 
     print(f"[camera] starting '{cfg.name}' ({cfg.id})")
     state.mac = net.read_mac()
+    if cfg.mac_hint and state.mac and state.mac.lower() != cfg.mac_hint.lower():
+        # The daemon ignored the address it was given, so this camera is on a
+        # random one. DHCP then treats it as a new device on every recreate and
+        # the reservation never sticks, which is worth saying out loud.
+        print(
+            f"[camera] WARNING: asked Docker for MAC {cfg.mac_hint} but this "
+            f"container has {state.mac}. The address was not applied, so the "
+            "DHCP reservation for this camera will not be used.",
+            file=sys.stderr,
+        )
     state_file.write(_status_payload(cfg, state))
 
     # 1. DHCP -------------------------------------------------------------

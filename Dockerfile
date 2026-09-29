@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         busybox \
         iproute2 \
         ffmpeg \
+        netcat-openbsd \
         ca-certificates \
         curl \
         openssl \

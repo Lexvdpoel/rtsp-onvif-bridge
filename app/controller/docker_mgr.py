@@ -12,7 +12,8 @@ import socket
 
 import docker
 from docker.errors import APIError, ImageNotFound, NotFound
-from docker.types import DeviceRequest, IPAMConfig, IPAMPool
+from docker.types import DeviceRequest, EndpointConfig, IPAMConfig, IPAMPool
+from docker.utils import version_lt
 
 from ..common import models
 
@@ -204,6 +205,26 @@ class DockerManager:
 
     # ---------------------------------------------------------------- containers
 
+    def mac_placement(self, mac: str) -> dict:
+        """Where this daemon wants a fixed MAC address.
+
+        The container-wide MacAddress field was deprecated in Docker API 1.44 in
+        favour of one per network endpoint. A daemon that has dropped it does not
+        complain: it silently hands the container a random address instead, the
+        DHCP server sees a device it has never met, and the camera lands on a
+        different IP after every recreate.
+        """
+        api_version = getattr(self.client.api, "api_version", "") or "1.24"
+        if version_lt(api_version, "1.44"):
+            return {"mac_address": mac}
+        return {
+            "networking_config": {
+                self.network_name: EndpointConfig(
+                    version=api_version, mac_address=mac
+                )
+            }
+        }
+
     def _container(self, cam: dict):
         try:
             return self.client.containers.get(models.container_name(cam))
@@ -251,7 +272,7 @@ class DockerManager:
                 hostname=models.hostname_for(cam),
                 environment=environment,
                 network=self.network_name,
-                mac_address=cam["mac"],
+                **self.mac_placement(cam["mac"]),
                 cap_add=["NET_ADMIN", "NET_RAW"],
                 restart_policy={"Name": "unless-stopped"},
                 volumes={source: {"bind": self.state_dir, "mode": "rw"}},
