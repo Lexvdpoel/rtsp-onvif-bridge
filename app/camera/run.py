@@ -19,7 +19,17 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import detect as detect_mod, mediamtx, net, probe as probe_mod, transcode, unifi
+from . import (
+    detect as detect_mod,
+    mediamtx,
+    net,
+    probe as probe_mod,
+    transcode,
+    unifi,
+    unifi_adopt,
+    unifi_discovery,
+    unifi_models,
+)
 from .onvif_server import serve as serve_onvif
 from .stats import StatsCollector
 from .wsdiscovery import DiscoveryResponder
@@ -82,6 +92,9 @@ class Config:
     unifi_host: str
     unifi_token: str
     unifi_extra_args: str
+    unifi_discoverable: bool
+    unifi_model: str
+    unifi_firmware: str
     mac_hint: str
     output_codec: str
     hwaccel: str
@@ -133,6 +146,9 @@ class Config:
             unifi_host=_env("UNIFI_HOST"),
             unifi_token=_env("UNIFI_TOKEN"),
             unifi_extra_args=_env("UNIFI_EXTRA_ARGS"),
+            unifi_discoverable=_env_bool("UNIFI_DISCOVERABLE", True),
+            unifi_model=_env("UNIFI_MODEL", "UVC_G4_BULLET"),
+            unifi_firmware=_env("UNIFI_FIRMWARE", "4.71.0"),
             mac_hint=_env("CAM_MAC"),
             output_codec=_env("OUTPUT_CODEC", "copy"),
             hwaccel=_env("HWACCEL", "none"),
@@ -156,6 +172,7 @@ class State:
         self.stats: dict = {}
         self.transcode: dict = {}
         self.detections: list = []
+        self.unifi: dict = {}
 
     def refresh_from_interface(self):
         self.ip = net.read_ip()
@@ -201,6 +218,7 @@ def _status_payload(cfg: Config, state: State) -> dict:
         "stats": state.stats,
         "transcode": state.transcode,
         "mode": cfg.mode,
+        "unifi": state.unifi,
         "detections": state.detections[-20:],
         "advertised": {
             "encoding": cfg.encoding,
@@ -381,19 +399,82 @@ def main() -> int:
     # 4b. UniFi Protect ----------------------------------------------------
     unifi_proc = None
     unifi_args: list[str] = []
+    discovery_responder = None
+    adopt_server = None
     if cfg.mode == "unifi":
         # Point the proxy at our own relay when it is running, so the codec
         # conversion and hardware encoding still apply on the way to Protect.
         stream_url = (
             f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy else cfg.source_url
         )
+        state_dir = _env("STATE_DIR", "/state")
         try:
-            cert = unifi.ensure_certificate(cfg.id, _env("STATE_DIR", "/state"))
-            unifi_args = unifi.build_args(cfg, state, cert, stream_url)
-            unifi_proc = unifi.start(unifi_args)
-        except Exception as exc:  # noqa: BLE001 - reported, never fatal
-            state.message = f"UniFi proxy failed to start: {exc}"
+            cert = unifi.ensure_certificate(cfg.id, state_dir)
+        except Exception as exc:  # noqa: BLE001
+            cert = ""
+            state.message = f"Could not prepare the UniFi certificate: {exc}"
             print(f"[unifi] {state.message}")
+
+        def launch_proxy(token: str, host: str) -> None:
+            nonlocal unifi_proc, unifi_args
+            try:
+                unifi_args = unifi.build_args(cfg, state, cert, stream_url,
+                                              token=token, host=host)
+                unifi_proc = unifi.start(unifi_args)
+                state.message = ""
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                state.message = f"UniFi proxy failed to start: {exc}"
+                print(f"[unifi] {state.message}")
+
+        if cert:
+            identity = unifi_models.identity(cfg.unifi_model)
+            stored = unifi_adopt.load_payload(cfg.id, state_dir)
+            # A token typed in by hand still wins; it is the escape hatch for a
+            # console that discovery cannot reach.
+            token = cfg.unifi_token or stored.get("token", "")
+            host = cfg.unifi_host or stored.get("host", "")
+            if stored.get("port") and host and ":" not in host:
+                host = f"{host}:{stored['port']}"
+
+            state.unifi = {
+                "model": identity["model"],
+                "adopted": bool(token and host),
+                "console": host,
+                "discoverable": cfg.unifi_discoverable,
+            }
+
+            if token and host:
+                launch_proxy(token, host)
+            elif cfg.unifi_discoverable:
+                # Offer ourselves the way a factory camera does: answer the
+                # discovery probe, then take the token Protect pushes to us.
+                def adopted(payload: dict) -> None:
+                    console = f"{payload['host']}:{payload['port']}"
+                    state.unifi = dict(state.unifi, adopted=True, console=console)
+                    print(f"[unifi] adopted by {console}; starting the proxy")
+                    launch_proxy(payload["token"], console)
+
+                service = unifi_adopt.AdoptionService(
+                    cfg, state, identity, state_dir, on_adopted=adopted
+                )
+                try:
+                    adopt_server = unifi_adopt.serve(service, cert)
+                except Exception as exc:  # noqa: BLE001
+                    state.message = f"Adoption endpoint failed to start: {exc}"
+                    print(f"[unifi] {state.message}")
+                discovery_responder = unifi_discovery.DiscoveryResponder(
+                    cfg, state, identity, adoptable=lambda: not service.adopted.is_set()
+                )
+                discovery_responder.start()
+                print(
+                    "[unifi] waiting to be adopted; the camera should appear in "
+                    "Protect under devices ready to adopt"
+                )
+            else:
+                state.message = (
+                    "UniFi mode needs either discovery or an adoption token."
+                )
+                print(f"[unifi] {state.message}")
 
     # 4c. object detection ------------------------------------------------
     detector = None
@@ -454,6 +535,10 @@ def main() -> int:
         state.status = "running" if state.ip else "no-address"
         state_file.write(_status_payload(cfg, state))
 
+    if discovery_responder is not None:
+        discovery_responder.stop()
+    if adopt_server is not None:
+        adopt_server.shutdown()
     if detector is not None:
         detector.stop()
     if collector is not None:

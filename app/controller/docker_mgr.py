@@ -368,6 +368,20 @@ class DockerManager:
         self._clear_state_file(cam)
         self.remove_unraid_template(cam)
 
+    def purge(self, cam: dict):
+        """Forget a camera entirely, including its UniFi identity.
+
+        Kept apart from remove(), which also runs on a restart: dropping the
+        certificate there would force the camera to be adopted again every time
+        it was restarted.
+        """
+        certs = os.path.join(self.state_dir, "certs")
+        for name in (f"{cam['id']}.pem", f"{cam['id']}-mgmt.json"):
+            try:
+                os.remove(os.path.join(certs, name))
+            except OSError:
+                pass
+
     def logs(self, cam: dict, tail: int = 200) -> str:
         container = self._container(cam)
         if container is None:

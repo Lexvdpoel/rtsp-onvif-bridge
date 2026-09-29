@@ -68,6 +68,19 @@ ONVIF® is a trademark of the ONVIF consortium. This project is not affiliated
 with, endorsed by, or certified by ONVIF, and calling a device here "ONVIF" is a
 description of the protocol it speaks, not a claim of conformance testing.
 
+## Reverse-engineered protocol details
+
+The UniFi discovery responder and the adoption endpoint in
+[app/camera/unifi_discovery.py](app/camera/unifi_discovery.py),
+[app/camera/unifi_adopt.py](app/camera/unifi_adopt.py) and
+[app/camera/unifi_models.py](app/camera/unifi_models.py) are built on the
+reverse-engineering published in
+[unifi-cam-proxy-redalert](https://github.com/NorthernMan54/unifi-cam-proxy-redalert)
+(MIT, a fork of unifi-cam-proxy): the discovery TLV field numbers, the
+`POST /api/1.2/manage` adoption flow, and the table of model platforms and system
+ids. The code here is written from those findings rather than copied, but the
+findings are theirs and none of it would work without them.
+
 ## Acknowledgements
 
 The certificate generation for UniFi adoption follows the OpenSSL invocation

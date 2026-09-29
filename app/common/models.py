@@ -29,6 +29,11 @@ DEFAULTS = {
     "unifi_host": "",
     "unifi_token": "",
     "unifi_extra_args": "",
+    # Offer the camera for adoption the way a real one does, instead of
+    # pasting a token.
+    "unifi_discoverable": True,
+    "unifi_model": "UVC_G4_BULLET",
+    "unifi_firmware": "4.71.0",
     "onvif_port": 80,
     "rtsp_port": 554,
     "username": "admin",
@@ -175,6 +180,7 @@ _INT_FIELDS = {
 _FLOAT_FIELDS = {"detect_confidence"}
 _BOOL_FIELDS = {
     "enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect", "detect",
+    "unifi_discoverable",
 }
 _IMMUTABLE = {"id", "mac", "serial", "uuid", "created_at"}
 
@@ -232,8 +238,18 @@ def validate(cam: dict) -> list[str]:
             )
     if cam.get("mode") not in ("onvif", "unifi"):
         errors.append("Mode must be onvif or unifi.")
-    if cam.get("mode") == "unifi" and not (cam.get("unifi_host") or "").strip():
-        errors.append("UniFi mode needs the address of your Protect console.")
+    if cam.get("mode") == "unifi":
+        # With discovery on, Protect finds the camera and supplies both the
+        # console address and the token itself.
+        if not cam.get("unifi_discoverable") and not (cam.get("unifi_host") or "").strip():
+            errors.append(
+                "UniFi mode needs either discovery, or the address of your "
+                "Protect console."
+            )
+    if cam.get("mode") == "unifi" and cam.get("unifi_model"):
+        from ..camera.unifi_models import MODELS
+        if cam["unifi_model"] not in MODELS:
+            errors.append(f"Unknown UniFi model '{cam['unifi_model']}'.")
     if cam.get("source_mac") and not normalize_mac(cam["source_mac"]):
         errors.append("Source MAC must be 12 hex digits, e.g. a0:bb:3e:11:22:33.")
     if cam.get("output_codec") not in ("copy", "h264", "h265"):
@@ -275,6 +291,9 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "UNIFI_HOST": cam.get("unifi_host") or "",
         "UNIFI_TOKEN": cam.get("unifi_token") or "",
         "UNIFI_EXTRA_ARGS": cam.get("unifi_extra_args") or "",
+        "UNIFI_DISCOVERABLE": "1" if cam.get("unifi_discoverable", True) else "0",
+        "UNIFI_MODEL": cam.get("unifi_model") or "UVC_G4_BULLET",
+        "UNIFI_FIRMWARE": cam.get("unifi_firmware") or "4.71.0",
         "OUTPUT_CODEC": cam.get("output_codec") or "copy",
         "HWACCEL": cam.get("hwaccel") or "auto",
         "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),

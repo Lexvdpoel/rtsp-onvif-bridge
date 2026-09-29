@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
+from ..camera import unifi_models
 from ..common import models
 from . import backup as backup_mod
 from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
@@ -276,6 +277,7 @@ def status():
             info["network"].update(manager.ensure_network())
         except DockerError as exc:
             info["error"] = str(exc)
+    info["unifi_models"] = unifi_models.choices()
     return info
 
 
@@ -345,6 +347,7 @@ def delete_camera(cam_id: str):
     if manager is not None:
         try:
             manager.remove(cam)
+            manager.purge(cam)
         except DockerError as exc:
             print(f"[controller] cleanup of '{cam['name']}' failed: {exc}")
     store.delete(cam_id)

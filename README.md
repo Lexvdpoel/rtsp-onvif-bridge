@@ -298,44 +298,53 @@ still apply: the proxy reads from the local relay.
 
 ### Adopting a camera into Protect
 
-1. Set the mode to **UniFi Protect**. The console address is pre-filled from the
-   `UNIFI_HOST` setting; override it per camera if one talks to a different
-   console.
-2. Get an adoption token. Recent Protect versions no longer offer one on the
-   advanced adoption screen. Sign in to the console in a browser **with your
-   Ubiquiti cloud account** — a local-only account returns an authentication
-   error — and then open:
+Set the mode to **UniFi Protect** and leave **Offer this camera for adoption**
+on. The camera then behaves like a factory one: it answers UniFi's discovery
+probe on UDP 10001, appears in Protect under devices ready to adopt, and when you
+click Adopt, Protect pushes the management token to the camera itself. Nothing to
+copy, and no 60-minute clock.
 
-   ```
-   https://<console>/proxy/protect/api/cameras/manage-payload
-   ```
+Under the hood that is three things working together:
 
-   The response contains the token, along with the management host the camera
-   will connect to:
+1. A discovery responder announces the camera over UDP 10001 with a real UniFi
+   model identity — platform and system id — so Protect classifies it as a
+   camera.
+2. An HTTPS endpoint on the camera's own address accepts `POST /api/1.2/manage`,
+   which is what Protect sends when you click Adopt. The payload carries the
+   token and the console to connect back to.
+3. That token starts `unifi-cam-proxy`, which opens the websocket to the console
+   and streams.
 
-   ```json
-   {"wifi":{...},"mgmt":{"protocol":"wss","hosts":["10.0.0.1:7442"],"token":"…"}}
-   ```
+The payload is stored beside the camera's certificate, so a restart reconnects
+without adopting again. Deleting the camera discards both, and it has to be
+adopted afresh.
 
-3. Paste the token into the form and save. It is valid for 60 minutes.
+**Announce as** picks which model the camera claims to be. It matters: Protect
+gates features on the model, so choose one whose capabilities match the stream
+you feed it — a G4 line implies H.264, a G5 line H.265.
 
-### Why a token at all
+### If discovery cannot reach the console
 
-A factory UniFi camera announces itself on the LAN and Protect pushes the
-adoption to it. This works the other way round: the proxy dials out to the
-console and identifies itself with the token and a certificate. There is no
-discovery or inform code in `unifi-cam-proxy` — the camera cannot make itself
-appear in the adoption list the way a real one does, so the token is the way in.
+Discovery is a LAN broadcast and does not cross VLANs or routers. For a console
+on another segment, switch **Offer this camera for adoption** off and supply the
+address and a token by hand.
 
-Making it announce itself would mean reverse-engineering both the discovery
-broadcast and the inbound adoption handshake. That is a separate project, not a
-setting.
+Recent Protect versions no longer show a token on the advanced adoption screen.
+Sign in to the console in a browser **with your Ubiquiti cloud account** — a
+local-only account returns an authentication error — and open:
 
-The token is only needed the first time. After that Protect recognises the camera
-by a client certificate, which the bridge generates itself — you do not have to
-extract a key from a real UniFi camera. The certificate is kept with the camera's
-state in `state/certs/` so it survives a restart. Delete the camera and it is
-gone, and you have to adopt again.
+```
+https://<console>/proxy/protect/api/cameras/manage-payload
+```
+
+The response carries the token and the management host:
+
+```json
+{"wifi":{...},"mgmt":{"protocol":"wss","hosts":["10.0.0.1:7442"],"token":"…"}}
+```
+
+The console address is pre-filled from the bridge's `UNIFI_HOST` setting when
+there is one. The token is valid for 60 minutes and only needed once.
 
 If you know the proxy and miss an option, **Extra proxy arguments** passes
 arguments through unchanged.
@@ -389,6 +398,11 @@ only animal events are lost.
 
 There is no two-way audio and no PTZ. Detection runs on the sub stream and has no
 zones: it reports *what* it sees, not *where* in the frame.
+
+Discovery makes the camera adoptable; it does not make it a UniFi camera in every
+respect. Anything Protect expects from real hardware beyond streaming — firmware
+updates, on-camera settings, the features tied to a specific model — is not
+implemented.
 
 ## Choosing the outgoing codec
 
@@ -534,6 +548,9 @@ environment (or in `docker-compose.yml`, then restart the cameras).
 | [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
 | [app/camera/unifi.py](app/camera/unifi.py) | certificate and invocation for unifi-cam-proxy |
 | [app/camera/unifi_runner.py](app/camera/unifi_runner.py) | proxy camera that forwards detections |
+| [app/camera/unifi_discovery.py](app/camera/unifi_discovery.py) | answers UniFi's discovery probe so the camera can be adopted |
+| [app/camera/unifi_adopt.py](app/camera/unifi_adopt.py) | receives the adoption payload Protect pushes |
+| [app/camera/unifi_models.py](app/camera/unifi_models.py) | UniFi model platforms and system ids |
 | [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
 | [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |
 | [unraid/](unraid/) | Unraid template and icons |

@@ -75,21 +75,27 @@ def ensure_certificate(cam_id: str, state_dir: str) -> str:
     return path
 
 
-def build_args(cfg, state, cert: str, stream_url: str) -> list[str]:
-    """The unifi-cam-proxy invocation for this camera."""
+def build_args(cfg, state, cert: str, stream_url: str,
+               token: str | None = None, host: str | None = None) -> list[str]:
+    """The unifi-cam-proxy invocation for this camera.
+
+    token and host normally come from the adoption payload Protect pushed to us;
+    without them the values configured by hand are used.
+    """
     args = [
         # Our own entrypoint, run by the interpreter that has unifi-cam-proxy:
         # it registers a camera class that can also report detections, then
         # hands over to unifi-cam-proxy's own main().
         VENV_PYTHON, "-m", "app.camera.unifi_runner",
-        "--host", cfg.unifi_host,
+        "--host", host or cfg.unifi_host,
         "--cert", cert,
         "--mac", state.mac or cfg.mac_hint,
     ]
     # Only needed while adopting; afterwards the certificate identifies the
     # camera and a stale token would just be refused.
-    if cfg.unifi_token:
-        args += ["--token", cfg.unifi_token]
+    adoption_token = token or cfg.unifi_token
+    if adoption_token:
+        args += ["--token", adoption_token]
     if cfg.unifi_extra_args:
         args += shlex.split(cfg.unifi_extra_args)
     args += ["rtsp", "-s", stream_url]
