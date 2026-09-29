@@ -299,10 +299,13 @@ still apply: the proxy reads from the local relay.
 ### Adopting a camera into Protect
 
 Set the mode to **UniFi Protect** and leave **Offer this camera for adoption**
-on. The camera then behaves like a factory one: it answers UniFi's discovery
-probe on UDP 10001, appears in Protect under devices ready to adopt, and when you
-click Adopt, Protect pushes the management token to the camera itself. Nothing to
-copy, and no 60-minute clock.
+on. The camera then behaves like a factory one: it offers itself over UDP 10001,
+appears in Protect under devices ready to adopt, and when you click Adopt,
+Protect pushes the management token to the camera itself. Nothing to copy, and no
+60-minute clock.
+
+On the same subnet the broadcast is enough. Across a VLAN, fill in the console
+address as well — see below.
 
 Under the hood that is three things working together:
 
@@ -323,12 +326,29 @@ adopted afresh.
 gates features on the model, so choose one whose capabilities match the stream
 you feed it — a G4 line implies H.264, a G5 line H.265.
 
-### If discovery cannot reach the console
+### A console on another VLAN
 
-Discovery is a LAN broadcast and does not cross VLANs or routers. For a console
-on another segment, switch **Offer this camera for adoption** off and supply the
-address and a token by hand.
+Discovery is a broadcast and a broadcast does not cross a router, so a console on
+another subnet never sees it. A real UniFi camera has the same problem, and
+Ubiquiti's answer is to log in to the camera and tell it where the Protect host
+is. This does that for you: fill in **Protect console address** and the camera
+announces itself straight to it every ten seconds, until something adopts it.
 
+So with cameras on 10.51.100.x and Protect on 10.51.0.x, leave discovery on and
+set the console address to your Protect host. Nothing else changes.
+
+Your inter-VLAN firewall has to allow:
+
+| Direction | Port | What for |
+|---|---|---|
+| camera → console | UDP 10001 | the announcement that makes the camera appear |
+| console → camera | TCP 443 | the adoption payload Protect pushes |
+| camera → console | TCP 7442 | the management websocket |
+| camera → console | TCP 7550 | the video stream |
+
+### If it still cannot be adopted
+
+With discovery off, supply the console address and a token by hand instead.
 Recent Protect versions no longer show a token on the advanced adoption screen.
 Sign in to the console in a browser **with your Ubiquiti cloud account** — a
 local-only account returns an authentication error — and open:
@@ -340,11 +360,10 @@ https://<console>/proxy/protect/api/cameras/manage-payload
 The response carries the token and the management host:
 
 ```json
-{"wifi":{...},"mgmt":{"protocol":"wss","hosts":["10.0.0.1:7442"],"token":"…"}}
+{"wifi":{...},"mgmt":{"protocol":"wss","hosts":["10.51.0.1:7442"],"token":"…"}}
 ```
 
-The console address is pre-filled from the bridge's `UNIFI_HOST` setting when
-there is one. The token is valid for 60 minutes and only needed once.
+The token is valid for 60 minutes and only needed once.
 
 If you know the proxy and miss an option, **Extra proxy arguments** passes
 arguments through unchanged.

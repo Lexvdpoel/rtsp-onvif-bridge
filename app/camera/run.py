@@ -468,7 +468,11 @@ def main() -> int:
                     state.message = f"Adoption endpoint failed to start: {exc}"
                     print(f"[unifi] {state.message}")
                 discovery_responder = unifi_discovery.DiscoveryResponder(
-                    cfg, state, identity, adoptable=lambda: not service.adopted.is_set()
+                    cfg, state, identity,
+                    adoptable=lambda: not service.adopted.is_set(),
+                    # Known console address: announce to it as well, so a
+                    # console behind a router still sees the camera.
+                    console=cfg.unifi_host,
                 )
                 discovery_responder.start()
                 print(

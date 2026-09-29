@@ -284,10 +284,11 @@
             </label>
           </div>
           <div class="wide hint">
-            With this on, the camera answers UniFi's discovery probe and appears in Protect under
-            devices ready to adopt. Click Adopt there and Protect hands the camera its token
-            itself — nothing to copy, and no 60-minute clock. Leave it off only for a console
-            discovery cannot reach, and then fill in the address and a token below.
+            With this on, the camera offers itself the way a real one does and appears in Protect
+            under devices ready to adopt. Click Adopt there and Protect hands the camera its token
+            itself — nothing to copy, and no 60-minute clock. On the same subnet the broadcast is
+            enough; across a VLAN, fill in the console address below and the camera announces
+            itself to it directly.
           </div>
           <div>
             <label for="f-unifi-model">Announce as</label>
@@ -301,17 +302,14 @@
             <label for="f-unifi-firmware">Firmware it reports</label>
             <input type="text" id="f-unifi-firmware" name="unifi_firmware" value="4.71.0">
           </div>
-          <div id="unifiManual" class="wide">
-            <div class="form-grid">
-              <div>
-                <label for="f-unifi-host">Protect console address</label>
-                <input type="text" id="f-unifi-host" name="unifi_host" placeholder="192.168.1.1">
-              </div>
-              <div>
-                <label for="f-unifi-token">Adoption token</label>
-                <input type="text" id="f-unifi-token" name="unifi_token" autocomplete="off">
-              </div>
-            </div>
+          <div>
+            <label for="f-unifi-host">Protect console address</label>
+            <input type="text" id="f-unifi-host" name="unifi_host" placeholder="10.51.0.1">
+            <div class="hint" id="unifiHostHint"></div>
+          </div>
+          <div id="unifiManual">
+            <label for="f-unifi-token">Adoption token</label>
+            <input type="text" id="f-unifi-token" name="unifi_token" autocomplete="off">
           </div>
           <div class="wide">
             <label for="f-unifi-extra">Extra proxy arguments (optional)</label>
@@ -1085,9 +1083,17 @@ function applyMode() {
   // ports play no part.
   $("#unifiFields").hidden = !unifi;
   $("#onvifFields").hidden = unifi;
-  // With discovery on, Protect supplies both the console address and the token,
-  // so showing the fields for them would only invite filling them in.
-  $("#unifiManual").hidden = $("#f-unifi-discoverable").checked;
+  // With discovery on Protect supplies the token itself, so that field only
+  // gets in the way. The console address stays: it is what lets the camera
+  // announce itself across a routed network.
+  const discoverable = $("#f-unifi-discoverable").checked;
+  $("#unifiManual").hidden = discoverable;
+  $("#unifiHostHint").textContent = discoverable
+    ? "Optional on the same subnet, where the broadcast finds the camera. Required "
+      + "when the console is on another VLAN: the camera then announces itself "
+      + "straight to this address, which is what you would otherwise type into a "
+      + "real camera's own web interface."
+    : "Required: with discovery off, this is the console the camera connects to.";
 }
 
 $("#f-mode").addEventListener("change", applyMode);

@@ -40,6 +40,18 @@ DEFAULT_CREDENTIALS = 44
 PRIMARY_ADDRESS = 47
 
 
+def console_address(value: str) -> tuple[str, int]:
+    """Console host to announce to. A management port is ignored: discovery
+    listens on 10001 whatever port the websocket later uses."""
+    host = (value or "").strip()
+    if host.startswith(("http://", "https://")):
+        host = host.split("//", 1)[1]
+    host = host.rstrip("/")
+    if ":" in host:
+        host = host.rsplit(":", 1)[0]
+    return host, DISCOVERY_PORT
+
+
 def _field(field_id: int, data: bytes) -> bytes:
     return struct.pack(">BH", field_id, len(data)) + data
 
@@ -71,15 +83,27 @@ def build_response(mac: str, ip: str, hostname: str, identity: dict,
 
 
 class DiscoveryResponder(threading.Thread):
-    """Replies to discovery probes for as long as the camera is unadopted."""
+    """Offers the camera for adoption until a console takes it.
 
-    def __init__(self, cfg, state, identity: dict, adoptable=lambda: True):
+    Two ways, because one is not enough. Answering the broadcast probe covers a
+    console on the same segment. A broadcast does not cross a router, so when a
+    console address is known the same packet is also sent straight to it every
+    few seconds — the equivalent of telling a real camera where its Protect host
+    is, which is what Ubiquiti has you do for a camera on another VLAN.
+    """
+
+    ANNOUNCE_SECONDS = 10
+
+    def __init__(self, cfg, state, identity: dict, adoptable=lambda: True,
+                 console: str = ""):
         super().__init__(name="unifi-discovery", daemon=True)
         self.cfg = cfg
         self.state = state
         self.identity = identity
         self.adoptable = adoptable
+        self.console = (console or "").strip()
         self.answered = 0
+        self.announced = 0
         self.error = ""
         self._started_at = time.monotonic()
         self._stop = threading.Event()
@@ -99,10 +123,12 @@ class DiscoveryResponder(threading.Thread):
                     return
                 continue
 
+            where = f"UDP {DISCOVERY_PORT}"
+            if self.console:
+                where += f", announcing to {console_address(self.console)[0]}"
             print(
-                f"[unifi-discovery] announcing as {self.identity['model']} "
-                f"({self.identity['platform']}, {self.identity['sysid']}) "
-                f"on UDP {DISCOVERY_PORT}"
+                f"[unifi-discovery] offering {self.identity['model']} "
+                f"({self.identity['platform']}, {self.identity['sysid']}) on {where}"
             )
             try:
                 self._serve(sock)
@@ -114,8 +140,41 @@ class DiscoveryResponder(threading.Thread):
             if self._stop.wait(5):
                 return
 
+    def _packet(self) -> bytes:
+        return build_response(
+            mac=self.state.mac or self.cfg.mac_hint,
+            ip=self.state.ip,
+            hostname=self.cfg.hostname,
+            identity=self.identity,
+            firmware=self.cfg.unifi_firmware,
+            uptime=int(time.monotonic() - self._started_at),
+        )
+
+    def _announce(self, sock):
+        """Tell a console on another subnet that this camera is here."""
+        if not self.console or not self.state.ip or not self.adoptable():
+            return
+        host, port = console_address(self.console)
+        if not host:
+            return
+        try:
+            sock.sendto(self._packet(), (host, port))
+            self.announced += 1
+            if self.announced == 1:
+                print(f"[unifi-discovery] announced to {host}:{port}")
+        except OSError as exc:
+            self.error = f"could not announce to {host}: {exc}"
+            print(f"[unifi-discovery] {self.error}")
+        except Exception as exc:  # noqa: BLE001
+            self.error = str(exc)[:200]
+
     def _serve(self, sock):
+        next_announce = 0.0
         while not self._stop.is_set():
+            now = time.monotonic()
+            if now >= next_announce:
+                self._announce(sock)
+                next_announce = now + self.ANNOUNCE_SECONDS
             try:
                 data, addr = sock.recvfrom(2048)
             except socket.timeout:
@@ -132,14 +191,7 @@ class DiscoveryResponder(threading.Thread):
                 continue
 
             try:
-                reply = build_response(
-                    mac=self.state.mac or self.cfg.mac_hint,
-                    ip=self.state.ip,
-                    hostname=self.cfg.hostname,
-                    identity=self.identity,
-                    firmware=self.cfg.unifi_firmware,
-                    uptime=int(time.monotonic() - self._started_at),
-                )
+                reply = self._packet()
             except Exception as exc:  # noqa: BLE001
                 self.error = f"could not build the reply: {exc}"
                 print(f"[unifi-discovery] {self.error}")
