@@ -13,11 +13,11 @@ and the camera would have to be adopted again.
 from __future__ import annotations
 
 import os
-import shlex
 import shutil
 import subprocess
 import tempfile
 
+from ..common import models
 from . import unifi_models
 
 # unifi-cam-proxy lives in its own virtualenv; see the Dockerfile for why it
@@ -112,7 +112,17 @@ def build_args(cfg, state, cert: str, stream_url: str,
         args += ["--ip", address]
 
     if cfg.unifi_extra_args:
-        args += shlex.split(cfg.unifi_extra_args)
+        # A bare word here becomes the backend name and the proxy refuses to
+        # start, so drop it rather than pass on a config that cannot work.
+        extra, stray = models.split_proxy_args(cfg.unifi_extra_args)
+        if stray:
+            print(
+                "[unifi] ignoring "
+                + ", ".join(repr(word) for word in stray)
+                + " in the extra arguments: those are not flags, and the proxy "
+                "would read the first one as its backend name"
+            )
+        args += extra
     args += ["rtsp", "-s", stream_url]
     return args
 

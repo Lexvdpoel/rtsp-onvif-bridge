@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -222,6 +223,32 @@ def sanitize(payload: dict) -> dict:
     return out
 
 
+def split_proxy_args(text: str) -> tuple[list[str], list[str]]:
+    """Split extra proxy arguments into flags and anything loose.
+
+    unifi-cam-proxy takes the backend name as a positional argument, so a bare
+    word here is read as that name and the proxy refuses to start. Returns the
+    usable arguments and the stray words, so the caller can complain about them
+    rather than pass them on.
+    """
+    try:
+        parts = shlex.split(text or "")
+    except ValueError:
+        return [], [text.strip()] if text and text.strip() else []
+
+    args, stray, expect_value = [], [], False
+    for part in parts:
+        if expect_value:
+            args.append(part)
+            expect_value = False
+        elif part.startswith("-"):
+            args.append(part)
+            expect_value = "=" not in part
+        else:
+            stray.append(part)
+    return args, stray
+
+
 def validate(cam: dict) -> list[str]:
     errors = []
     if not cam.get("name"):
@@ -249,6 +276,14 @@ def validate(cam: dict) -> list[str]:
             errors.append(
                 "Detectable types are person, vehicle and animal. "
                 "The detection model has no class for a package."
+            )
+    if cam.get("unifi_extra_args"):
+        _, stray = split_proxy_args(cam["unifi_extra_args"])
+        if stray:
+            errors.append(
+                "Extra proxy arguments takes flags only; "
+                + ", ".join(repr(word) for word in stray)
+                + " would be read as a command and the proxy would refuse to start."
             )
     if cam.get("mode") not in ("onvif", "unifi"):
         errors.append("Mode must be onvif or unifi.")

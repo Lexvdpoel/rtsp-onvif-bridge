@@ -63,8 +63,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # removed from PyPI, so the requirements no longer install as published. The
 # successor is swapped in and the old import path given back with a shim:
 # unifi/main.py is the only place that imports it, and only for the top-level
-# ProtectApiClient. Pillow is added for the same reason: the proxy imports it for
-# snapshots but never declared it.
+# ProtectApiClient. Pillow and OpenCV are added for a related reason: a backend
+# this project never uses pulls them in, and while the failed import is not fatal
+# it prints an ImportError on every start that reads like a fault.
 #
 # The install is allowed to fail. It is an opt-in feature, the upstream project
 # pins nothing and pulls one dependency straight from a branch archive, so a
@@ -80,6 +81,7 @@ RUN set -eu; \
         sed -i '/^pyunifiprotect/d' /tmp/ucp-requirements.txt; \
         echo "uiprotect" >> /tmp/ucp-requirements.txt; \
         echo "pillow" >> /tmp/ucp-requirements.txt; \
+        echo "opencv-python-headless" >> /tmp/ucp-requirements.txt; \
     fi; \
     if /opt/unifi-venv/bin/pip install --no-cache-dir -r /tmp/ucp-requirements.txt \
        && /opt/unifi-venv/bin/pip install --no-cache-dir --no-deps \
