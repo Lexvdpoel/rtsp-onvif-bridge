@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -67,7 +68,9 @@ def ensure_certificate(cam_id: str, state_dir: str) -> str:
 def build_args(cfg, state, cert: str, stream_url: str) -> list[str]:
     """The unifi-cam-proxy invocation for this camera."""
     args = [
-        "unifi-cam-proxy",
+        # Our own entrypoint: it registers a camera class that can also report
+        # detections, then hands over to unifi-cam-proxy's own main().
+        sys.executable, "-m", "app.camera.unifi_runner",
         "--host", cfg.unifi_host,
         "--cert", cert,
         "--mac", state.mac or cfg.mac_hint,

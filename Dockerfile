@@ -40,6 +40,12 @@ RUN set -eux; \
     rm -f /tmp/mediamtx.tar.gz; \
     chmod +x /usr/local/bin/mediamtx
 
+# COCO-trained SSD MobileNet v1 from the ONNX model zoo (Apache-2.0). Baked in
+# so the cameras never fetch it at runtime. It does its own non-maximum
+# suppression, so what comes out is already a short list of boxes.
+ARG MODEL_URL=https://github.com/onnx/models/raw/main/validated/vision/object_detection_segmentation/ssd-mobilenetv1/model/ssd_mobilenet_v1_10.onnx
+RUN mkdir -p /opt/models &&     curl -fsSL -o /opt/models/ssd_mobilenet_v1_10.onnx "${MODEL_URL}"
+
 WORKDIR /opt/bridge
 
 COPY requirements.txt ./

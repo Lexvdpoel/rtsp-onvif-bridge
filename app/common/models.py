@@ -55,6 +55,13 @@ DEFAULTS = {
     "fps_sub": 15,
     "bitrate_sub": 512,
     "snapshot_enabled": True,
+    # On-camera object detection, run on the sub stream.
+    "detect": False,
+    "detect_types": "person,vehicle,animal",
+    "detect_fps": 3,
+    "detect_confidence": 0.5,
+    "detect_min_hits": 3,
+    "detect_cooldown": 30,
     "autodetect": True,
     "location": "any",
 }
@@ -150,6 +157,9 @@ def new_camera(payload: dict | None = None, taken: set[str] | None = None) -> di
 
 
 _INT_FIELDS = {
+    "detect_fps",
+    "detect_min_hits",
+    "detect_cooldown",
     "encode_bitrate",
     "onvif_port",
     "rtsp_port",
@@ -162,7 +172,10 @@ _INT_FIELDS = {
     "fps_sub",
     "bitrate_sub",
 }
-_BOOL_FIELDS = {"enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect"}
+_FLOAT_FIELDS = {"detect_confidence"}
+_BOOL_FIELDS = {
+    "enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect", "detect",
+}
 _IMMUTABLE = {"id", "mac", "serial", "uuid", "created_at"}
 
 
@@ -175,6 +188,11 @@ def sanitize(payload: dict) -> dict:
         if key in _INT_FIELDS:
             try:
                 out[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        elif key in _FLOAT_FIELDS:
+            try:
+                out[key] = float(value)
             except (TypeError, ValueError):
                 continue
         elif key in _BOOL_FIELDS:
@@ -199,6 +217,19 @@ def validate(cam: dict) -> list[str]:
         errors.append("RTSP port must be between 1 and 65535.")
     if cam.get("require_auth") and not cam.get("password"):
         errors.append("A password is required when authentication is enabled.")
+    if cam.get("detect"):
+        if not 1 <= int(cam.get("detect_fps", 3)) <= 15:
+            errors.append("Detection frame rate must be between 1 and 15.")
+        if not 0.1 <= float(cam.get("detect_confidence", 0.5)) <= 0.99:
+            errors.append("Detection confidence must be between 0.1 and 0.99.")
+        wanted = {t.strip() for t in (cam.get("detect_types") or "").split(",") if t.strip()}
+        if not wanted:
+            errors.append("Pick at least one object type to detect.")
+        elif not wanted <= {"person", "vehicle", "animal"}:
+            errors.append(
+                "Detectable types are person, vehicle and animal. "
+                "The detection model has no class for a package."
+            )
     if cam.get("mode") not in ("onvif", "unifi"):
         errors.append("Mode must be onvif or unifi.")
     if cam.get("mode") == "unifi" and not (cam.get("unifi_host") or "").strip():
@@ -250,6 +281,12 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "ENCODE_PRESET": cam.get("encode_preset") or "veryfast",
         "AUDIO": cam.get("audio") or "copy",
         "SNAPSHOT": "1" if cam["snapshot_enabled"] else "0",
+        "DETECT": "1" if cam.get("detect") else "0",
+        "DETECT_TYPES": cam.get("detect_types") or "person",
+        "DETECT_FPS": str(cam.get("detect_fps") or 3),
+        "DETECT_CONFIDENCE": str(cam.get("detect_confidence") or 0.5),
+        "DETECT_MIN_HITS": str(cam.get("detect_min_hits") or 3),
+        "DETECT_COOLDOWN": str(cam.get("detect_cooldown") or 30),
         "AUTODETECT": "1" if cam.get("autodetect", True) else "0",
         "VIDEO_WIDTH": str(cam["width"]),
         "VIDEO_HEIGHT": str(cam["height"]),

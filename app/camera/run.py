@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from . import mediamtx, net, probe as probe_mod, transcode, unifi
+from . import detect as detect_mod, mediamtx, net, probe as probe_mod, transcode, unifi
 from .onvif_server import serve as serve_onvif
 from .stats import StatsCollector
 from .wsdiscovery import DiscoveryResponder
@@ -64,6 +64,12 @@ class Config:
     rtsp_transport: str
     snapshot_enabled: bool
     autodetect: bool
+    detect: bool
+    detect_types: str
+    detect_fps: int
+    detect_confidence: float
+    detect_min_hits: int
+    detect_cooldown: int
     width: int
     height: int
     fps: int
@@ -109,6 +115,12 @@ class Config:
             rtsp_transport=_env("RTSP_TRANSPORT", "tcp"),
             snapshot_enabled=_env_bool("SNAPSHOT", True),
             autodetect=_env_bool("AUTODETECT", True),
+            detect=_env_bool("DETECT", False),
+            detect_types=_env("DETECT_TYPES", "person,vehicle,animal"),
+            detect_fps=_env_int("DETECT_FPS", 3),
+            detect_confidence=float(_env("DETECT_CONFIDENCE", "0.5") or 0.5),
+            detect_min_hits=_env_int("DETECT_MIN_HITS", 3),
+            detect_cooldown=_env_int("DETECT_COOLDOWN", 30),
             width=_env_int("VIDEO_WIDTH", 1920),
             height=_env_int("VIDEO_HEIGHT", 1080),
             fps=_env_int("VIDEO_FPS", 15),
@@ -143,6 +155,7 @@ class State:
         self.detected: dict = {}
         self.stats: dict = {}
         self.transcode: dict = {}
+        self.detections: list = []
 
     def refresh_from_interface(self):
         self.ip = net.read_ip()
@@ -188,6 +201,7 @@ def _status_payload(cfg: Config, state: State) -> dict:
         "stats": state.stats,
         "transcode": state.transcode,
         "mode": cfg.mode,
+        "detections": state.detections[-20:],
         "advertised": {
             "encoding": cfg.encoding,
             "width": cfg.width,
@@ -381,6 +395,25 @@ def main() -> int:
             state.message = f"UniFi proxy failed to start: {exc}"
             print(f"[unifi] {state.message}")
 
+    # 4c. object detection ------------------------------------------------
+    detector = None
+    if cfg.detect:
+        sink = detect_mod.UnifiSink(_env_int("DETECT_BRIDGE_PORT", 8099)) \
+            if cfg.mode == "unifi" else None
+
+        def on_detection(object_type: str, score: float):
+            # Always recorded so the bridge's own UI can show it; in UniFi mode
+            # it is also handed to the proxy, which reports it to Protect.
+            state.detections.append(
+                {"type": object_type, "score": round(score, 3), "at": time.time()}
+            )
+            del state.detections[:-50]
+            if sink is not None:
+                sink(object_type, score)
+
+        detector = detect_mod.Detector(cfg, on_detection)
+        detector.start()
+
     state.status = "running"
     state.message = ""
     state_file.write(_status_payload(cfg, state))
@@ -421,6 +454,8 @@ def main() -> int:
         state.status = "running" if state.ip else "no-address"
         state_file.write(_status_payload(cfg, state))
 
+    if detector is not None:
+        detector.stop()
     if collector is not None:
         collector.stop()
     if discovery is not None:

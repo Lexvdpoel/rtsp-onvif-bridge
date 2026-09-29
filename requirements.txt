@@ -5,3 +5,7 @@ docker==7.1.0
 
 # Adopts a camera into UniFi Protect as a native device (per-camera opt-in).
 unifi-cam-proxy==0.13.2
+
+# On-camera object detection (per-camera opt-in).
+onnxruntime==1.20.1
+numpy==2.2.1

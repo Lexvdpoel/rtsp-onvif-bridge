@@ -448,6 +448,54 @@
       </fieldset>
 
       <fieldset>
+        <legend>Object detection</legend>
+        <div class="form-grid">
+          <div class="wide check" style="margin-top:0">
+            <input type="checkbox" id="f-detect" name="detect">
+            <label for="f-detect" style="margin:0">Detect objects in this camera's stream</label>
+          </div>
+          <div class="wide hint">
+            Runs on the sub stream, which is small enough to keep the cost down; without one it
+            falls back to the main stream. Detection happens here, so it works with cameras that
+            have no intelligence of their own. In UniFi mode the findings are reported to Protect
+            as smart detections; in ONVIF mode Protect has no way to receive them, so they are
+            only listed here.
+          </div>
+          <div class="wide">
+            <label for="f-detect-types">What to look for</label>
+            <input type="text" id="f-detect-types" name="detect_types" value="person,vehicle,animal">
+            <div class="hint">
+              Comma separated: person, vehicle, animal. Packages are not on the list — the
+              detection model has no class for a parcel, and inferring one from "suitcase" would
+              be a guess dressed up as a detection.
+            </div>
+          </div>
+          <div>
+            <label for="f-detect-fps">Frames per second</label>
+            <input type="number" id="f-detect-fps" name="detect_fps" value="3" min="1" max="15">
+          </div>
+          <div>
+            <label for="f-detect-confidence">Confidence threshold</label>
+            <input type="number" id="f-detect-confidence" name="detect_confidence"
+                   value="0.5" min="0.1" max="0.99" step="0.05">
+          </div>
+          <div>
+            <label for="f-detect-min-hits">Frames before reporting</label>
+            <input type="number" id="f-detect-min-hits" name="detect_min_hits" value="3" min="1" max="10">
+          </div>
+          <div>
+            <label for="f-detect-cooldown">Quiet period (seconds)</label>
+            <input type="number" id="f-detect-cooldown" name="detect_cooldown" value="30" min="1" max="600">
+          </div>
+          <div class="wide hint">
+            An object has to appear in several consecutive frames before it counts, which throws
+            away the single-frame flickers a small model produces. After reporting, that type
+            stays quiet for the period above, so one person walking past is one event.
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
         <legend>Advertised video properties</legend>
         <div class="form-grid">
           <div class="wide check" style="margin-top:0">
@@ -678,6 +726,15 @@ function detectedText(cam) {
   return parts.filter(Boolean).join(" · ");
 }
 
+function detectText(cam) {
+  if (!cam.detect) return "off";
+  const seen = ((cam.runtime || {}).detections || []);
+  if (!seen.length) return `watching for ${cam.detect_types}`;
+  const last = seen[seen.length - 1];
+  const ago = Math.max(0, Math.round(Date.now() / 1000 - last.at));
+  return `${last.type} ${ago}s ago (${seen.length} recent)`;
+}
+
 function outputText(cam) {
   const plan = ((cam.runtime || {}).transcode || {}).plans;
   if (plan && plan.main) return plan.main;
@@ -773,6 +830,7 @@ function render() {
           ${field("Source", cam.source_url, true)}
           ${field("Detected stream", detectedText(cam))}
           ${field("Mode", cam.mode === "unifi" ? "UniFi Protect (native)" : "ONVIF")}
+          ${field("Detection", detectText(cam))}
           ${field("Output", outputText(cam))}
           ${field("Encoder", encoderText(cam))}
           ${field("Rate control", rateModeText(cam))}

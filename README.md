@@ -325,13 +325,49 @@ Verwijder je de camera, dan is het weg en moet je opnieuw adopteren.
 Ken je de proxy en mis je een optie, dan kun je in **Extra proxy arguments**
 losse argumenten meegeven; die worden ongewijzigd doorgegeven.
 
+### Objectherkenning
+
+Camera's zonder eigen intelligentie sturen alleen beeld, dus de herkenning
+gebeurt hier. Zet **Detect objects** aan bij een camera en de container kijkt mee
+op de **substream** — een paar beelden per seconde op lage resolutie is genoeg om
+te zien dát er iemand staat, en het houdt de kosten laag genoeg om meerdere
+camera's tegelijk op een CPU te draaien. Is er geen substream, dan valt hij terug
+op de hoofdstream.
+
+Het model is SSD MobileNet v1 uit de ONNX model zoo, getraind op COCO, en zit in
+het image gebakken — de camera's halen bij het starten dus niets op.
+
+| Instelling | Wat het doet |
+|---|---|
+| **What to look for** | `person`, `vehicle`, `animal`, of een selectie daarvan |
+| **Frames per second** | hoe vaak er gekeken wordt; hoger is sneller én duurder |
+| **Confidence threshold** | hoe zeker het model moet zijn |
+| **Frames before reporting** | hoe vaak iets achter elkaar gezien moet worden |
+| **Quiet period** | hoelang datzelfde type daarna zwijgt |
+
+Die laatste twee doen het meeste werk. Een klein model produceert af en toe een
+losse valse treffer; door te eisen dat iets in meerdere opeenvolgende beelden
+zichtbaar is verdwijnen die. De rustperiode zorgt dat één voorbijganger één
+melding oplevert in plaats van één per beeld.
+
+In **UniFi-modus** worden de detecties als smart detection aan Protect gemeld. In
+ONVIF-modus kan Protect ze niet ontvangen; ze staan dan alleen op de camerakaart
+in deze UI.
+
+**Pakketjes kunnen niet.** COCO heeft geen klasse voor een pakket. Ik had er
+"koffer" op kunnen mappen, maar dat is een gok die zich voordoet als een
+detectie. Wil je pakketherkenning, dan is daar een model voor nodig dat er
+specifiek op getraind is.
+
+Ook eerlijk over **dier**: `unifi-cam-proxy` kent officieel alleen persoon en
+voertuig. Dier wordt met dezelfde waarde doorgegeven die Protect intern
+gebruikt, maar dat heb ik niet tegen een echte console kunnen verifiëren. Werkt
+het niet, dan gaan alleen dier-meldingen verloren.
+
 ### Wat dit niet doet
 
-Smart detections — persoon, voertuig, dier, pakket — zitten hier nog niet in. De
-weg daarheen is de `EventSmartDetect`-API van Protect, en die staat alleen open
-voor een camera die als native apparaat is geadopteerd; die modus is daarmee de
-voorwaarde, niet de oplossing. Er moet ook nog een bron van detecties komen: de
-AI van de broncamera, of een lokale detector.
+Er is geen tweerichtingsaudio en geen PTZ. De detectie draait op de substream
+en kent geen zones: hij meldt wát hij ziet, niet wáár in beeld.
 
 ## Uitgaande codec kiezen
 
@@ -477,6 +513,8 @@ camera-container (of in `docker-compose.yml`, waarna je de camera's herstart).
 | [app/camera/transcode.py](app/camera/transcode.py) | codec-beslissing en ffmpeg-commando |
 | [app/camera/hwprobe.py](app/camera/hwprobe.py) | test-encode per hardware-encoder |
 | [app/camera/unifi.py](app/camera/unifi.py) | certificaat en aanroep voor unifi-cam-proxy |
+| [app/camera/unifi_runner.py](app/camera/unifi_runner.py) | proxy-camera die detecties doorgeeft |
+| [app/camera/detect.py](app/camera/detect.py) | objectherkenning op de substream |
 | [app/controller/hwdetect.py](app/controller/hwdetect.py) | draait de probe, cachet en kiest |
 | [app/common/models.py](app/common/models.py) | cameramodel, MAC-generatie, validatie |
 
