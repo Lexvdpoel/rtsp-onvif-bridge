@@ -7,13 +7,16 @@ discover a camera, list its profiles and obtain stream and snapshot URIs.
 
 from __future__ import annotations
 
+import calendar
 import os
+import re
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from . import events as events_mod
 from . import snapshot as snapshot_mod
 from .soap import (
     check_http_basic,
@@ -44,6 +47,58 @@ def _plus_minutes(minutes: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + minutes * 60))
 
 
+def _plus_seconds(seconds: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + seconds))
+
+
+def _termination_seconds(value: str, default: int = events_mod.DEFAULT_TERMINATION) -> int:
+    """Read an xs:duration such as PT60S, or an absolute time, as seconds.
+
+    Clients send either. An unparseable one falls back to the default rather
+    than to zero, which would expire the subscription the moment it was made.
+    """
+    text = (value or "").strip().upper()
+    if not text:
+        return default
+    match = re.fullmatch(r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?",
+                         text)
+    if match and any(match.groups()):
+        days, hours, minutes, secs = (float(g or 0) for g in match.groups())
+        total = days * 86400 + hours * 3600 + minutes * 60 + secs
+        return int(total) if total > 0 else default
+    try:
+        absolute = time.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return default
+    remaining = int(calendar.timegm(absolute) - time.time())
+    return remaining if remaining > 0 else default
+
+
+def _render_message(message) -> str:
+    """One NotificationMessage, in the shape ONVIF clients parse."""
+    def items(mapping: dict) -> str:
+        return "".join(
+            f'<tt:SimpleItem Name="{xml_escape(str(name))}" '
+            f'Value="{xml_escape(str(value))}"/>'
+            for name, value in mapping.items()
+        )
+
+    return (
+        "<wsnt:NotificationMessage>"
+        '<wsnt:Topic Dialect="http://www.onvif.org/ver10/tev/topicExpression/'
+        'ConcreteSet" xmlns:tns1="http://www.onvif.org/ver10/topics">'
+        f"{message.topic}</wsnt:Topic>"
+        "<wsnt:Message>"
+        f'<tt:Message UtcTime="{message.utc}" '
+        f'PropertyOperation="{message.property_op}">'
+        f"<tt:Source>{items(message.source)}</tt:Source>"
+        f"<tt:Data>{items(message.data)}</tt:Data>"
+        "</tt:Message>"
+        "</wsnt:Message>"
+        "</wsnt:NotificationMessage>"
+    )
+
+
 def _scope_safe(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (value or "any"))
 
@@ -51,9 +106,11 @@ def _scope_safe(value: str) -> str:
 class OnvifService:
     """Builds ONVIF SOAP responses for one virtual camera."""
 
-    def __init__(self, cfg, state):
+    def __init__(self, cfg, state, events=None):
         self.cfg = cfg
         self.state = state  # provides .ip, .mac, .prefix
+        # Shared with the detector, which is what fills it.
+        self.events = events or events_mod.EventBroker()
 
     # ------------------------------------------------------------------ helpers
 
@@ -184,13 +241,20 @@ class OnvifService:
 
     # --------------------------------------------------------------- dispatcher
 
-    def dispatch(self, action: str, node) -> bytes | None:
+    # Operations addressed to one subscription rather than to the device. The
+    # client is given a URL carrying ?sub=<id> and sends these back to it, which
+    # is how two NVRs watching the same camera keep separate queues.
+    SUBSCRIPTION_ACTIONS = ("PullMessages", "Renew", "Unsubscribe")
+
+    def dispatch(self, action: str, node, sub_id: str = "") -> bytes | None:
         handler = getattr(self, f"op_{action}", None)
         if handler is None:
             return None
         if action in ("GetProfiles", "GetStreamUri", "GetSnapshotUri"):
             media2 = node is not None and node.tag.startswith("{" + MEDIA2_NS + "}")
             return handler(node, media2=media2)
+        if action in self.SUBSCRIPTION_ACTIONS:
+            return handler(node, sub_id=sub_id)
         return handler(node)
 
     # ----------------------------------------------------------- device service
@@ -540,6 +604,68 @@ class OnvifService:
 
     # ----------------------------------------------------------- events service
 
+    def _topic_set(self) -> str:
+        """Every topic this camera can actually raise, and nothing else.
+
+        An NVR builds its event filters from this. A topic advertised but never
+        raised is a checkbox in someone's interface that stays dark forever, so
+        the list follows the detector: motion, and the three classes the model
+        distinguishes.
+        """
+        simple = (
+            '<tt:SimpleItemDescription Name="%s" Type="%s"/>'
+        )
+        blocks = [
+            # The classic motion property. Nearly every client understands it.
+            '<tns1:VideoSource><MotionAlarm wstop:topic="true">'
+            '<tt:MessageDescription IsProperty="true">'
+            "<tt:Source>" + simple % ("Source", "tt:ReferenceToken") + "</tt:Source>"
+            "<tt:Data>" + simple % ("State", "xs:boolean") + "</tt:Data>"
+            "</tt:MessageDescription></MotionAlarm></tns1:VideoSource>",
+        ]
+
+        rules = [
+            '<CellMotionDetector><Motion wstop:topic="true">'
+            '<tt:MessageDescription IsProperty="true">'
+            "<tt:Source>"
+            + simple % ("VideoSourceConfigurationToken", "tt:ReferenceToken")
+            + simple % ("VideoAnalyticsConfigurationToken", "tt:ReferenceToken")
+            + simple % ("Rule", "xs:string")
+            + "</tt:Source>"
+            "<tt:Data>" + simple % ("IsMotion", "xs:boolean") + "</tt:Data>"
+            "</tt:MessageDescription></Motion></CellMotionDetector>",
+            # The ONVIF way to say what was seen, rather than only that
+            # something moved.
+            '<ObjectDetector><Object wstop:topic="true">'
+            "<tt:MessageDescription>"
+            "<tt:Source>"
+            + simple % ("VideoSourceConfigurationToken", "tt:ReferenceToken")
+            + simple % ("VideoAnalyticsConfigurationToken", "tt:ReferenceToken")
+            + simple % ("Rule", "xs:string")
+            + "</tt:Source>"
+            "<tt:Data>"
+            + simple % ("ObjectId", "xs:string")
+            + simple % ("ObjectType", "xs:string")
+            + simple % ("Likelihood", "xs:float")
+            + "</tt:Data>"
+            "</tt:MessageDescription></Object></ObjectDetector>",
+        ]
+        # One rule per class, which is the shape clients written against
+        # Hikvision cameras look for.
+        for spec in events_mod.CLASSES.values():
+            rules.append(
+                f'<MyRuleDetector><{spec["rule"]} wstop:topic="true">'
+                '<tt:MessageDescription IsProperty="true">'
+                "<tt:Source>"
+                + simple % ("VideoSourceConfigurationToken", "tt:ReferenceToken")
+                + simple % ("Rule", "xs:string")
+                + "</tt:Source>"
+                "<tt:Data>" + simple % ("State", "xs:boolean") + "</tt:Data>"
+                f'</tt:MessageDescription></{spec["rule"]}></MyRuleDetector>'
+            )
+        blocks.append("<tns1:RuleEngine>" + "".join(rules) + "</tns1:RuleEngine>")
+        return "".join(blocks)
+
     def op_GetEventProperties(self, node) -> bytes:
         return envelope(
             "<tev:GetEventPropertiesResponse>"
@@ -548,16 +674,13 @@ class OnvifService:
             "</tev:TopicNamespaceLocation>"
             "<wsnt:FixedTopicSet>true</wsnt:FixedTopicSet>"
             '<wstop:TopicSet xmlns:tns1="http://www.onvif.org/ver10/topics">'
-            '<tns1:VideoSource><MotionAlarm wstop:topic="true">'
-            '<tt:MessageDescription IsProperty="true">'
-            '<tt:Source><tt:SimpleItemDescription Name="Source" '
-            'Type="tt:ReferenceToken"/></tt:Source>'
-            '<tt:Data><tt:SimpleItemDescription Name="State" '
-            'Type="xs:boolean"/></tt:Data>'
-            "</tt:MessageDescription></MotionAlarm></tns1:VideoSource>"
+            + self._topic_set() +
             "</wstop:TopicSet>"
             "<wsnt:TopicExpressionDialect>"
             "http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet"
+            "</wsnt:TopicExpressionDialect>"
+            "<wsnt:TopicExpressionDialect>"
+            "http://docs.oasis-open.org/wsn/t-1/TopicExpression/Simple"
             "</wsnt:TopicExpressionDialect>"
             "<tev:MessageContentFilterDialect>"
             "http://www.onvif.org/ver10/tev/messageContentFilter/ItemFilter"
@@ -566,37 +689,59 @@ class OnvifService:
         )
 
     def op_CreatePullPointSubscription(self, node) -> bytes:
-        address = f"{self.events_xaddr()}?sub={uuid.uuid4().hex[:12]}"
+        seconds = _termination_seconds(child_text(node, "InitialTerminationTime"))
+        sub = self.events.subscribe(seconds)
+        address = f"{self.events_xaddr()}?sub={sub.id}"
         return envelope(
             "<tev:CreatePullPointSubscriptionResponse>"
             "<tev:SubscriptionReference>"
             f"<wsa:Address>{address}</wsa:Address>"
             "</tev:SubscriptionReference>"
             f"<wsnt:CurrentTime>{utc_now()}</wsnt:CurrentTime>"
-            f"<wsnt:TerminationTime>{_plus_minutes(60)}</wsnt:TerminationTime>"
+            f"<wsnt:TerminationTime>{_plus_seconds(seconds)}</wsnt:TerminationTime>"
             "</tev:CreatePullPointSubscriptionResponse>"
         )
 
-    def op_PullMessages(self, node) -> bytes:
-        # There is no real event source behind a plain RTSP URL, so return an
-        # empty batch quickly instead of blocking for the client's full timeout.
-        time.sleep(1.0)
+    def op_PullMessages(self, node, sub_id: str = "") -> bytes:
+        limit = max(1, min(int(child_text(node, "MessageLimit") or 10), 100))
+        timeout = _termination_seconds(child_text(node, "Timeout"), default=20)
+        # A long poll, but never longer than the socket will tolerate: a client
+        # that asked for PT60S still gets an empty batch in time to renew.
+        deadline = time.monotonic() + min(timeout, 30)
+
+        sub = self.events.get(sub_id) if sub_id else None
+        messages: list = []
+        while True:
+            if sub is not None:
+                messages = sub.take(limit)
+            if messages or time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+
+        body = "".join(_render_message(m) for m in messages)
         return envelope(
             "<tev:PullMessagesResponse>"
             f"<tev:CurrentTime>{utc_now()}</tev:CurrentTime>"
-            f"<tev:TerminationTime>{_plus_minutes(60)}</tev:TerminationTime>"
+            f"<tev:TerminationTime>{_plus_seconds(events_mod.DEFAULT_TERMINATION)}"
+            "</tev:TerminationTime>"
+            + body +
             "</tev:PullMessagesResponse>"
         )
 
-    def op_Renew(self, node) -> bytes:
+    def op_Renew(self, node, sub_id: str = "") -> bytes:
+        seconds = _termination_seconds(child_text(node, "TerminationTime"))
+        if sub_id:
+            self.events.renew(sub_id, seconds)
         return envelope(
             "<wsnt:RenewResponse>"
-            f"<wsnt:TerminationTime>{_plus_minutes(60)}</wsnt:TerminationTime>"
+            f"<wsnt:TerminationTime>{_plus_seconds(seconds)}</wsnt:TerminationTime>"
             f"<wsnt:CurrentTime>{utc_now()}</wsnt:CurrentTime>"
             "</wsnt:RenewResponse>"
         )
 
-    def op_Unsubscribe(self, node) -> bytes:
+    def op_Unsubscribe(self, node, sub_id: str = "") -> bytes:
+        if sub_id:
+            self.events.unsubscribe(sub_id)
         return envelope("<wsnt:UnsubscribeResponse/>")
 
     def op_SetSynchronizationPoint(self, node) -> bytes:
@@ -688,6 +833,8 @@ class OnvifHandler(BaseHTTPRequestHandler):
                 fault("Sender", "ter:OperationProhibited", "Empty SOAP body"), 400
             )
 
+        sub_id = (parse_qs(urlparse(self.path).query).get("sub") or [""])[0]
+
         cfg = self.service.cfg
         if cfg.require_auth and action not in PUBLIC_ACTIONS:
             present, valid = check_ws_security(root, cfg.username, cfg.password)
@@ -703,7 +850,7 @@ class OnvifHandler(BaseHTTPRequestHandler):
                 )
 
         try:
-            response = self.service.dispatch(action, node)
+            response = self.service.dispatch(action, node, sub_id=sub_id)
         except Exception as exc:  # one bad request must not take the camera down
             print(f"[onvif] error handling {action}: {exc}")
             return self._send(fault("Receiver", "ter:Action", str(exc)), 500)
@@ -743,10 +890,11 @@ class OnvifHandler(BaseHTTPRequestHandler):
         self._send(image, 200, "image/jpeg", {"Cache-Control": "no-store"})
 
 
-def serve(cfg, state) -> ThreadingHTTPServer:
+def serve(cfg, state, events=None) -> ThreadingHTTPServer:
     """Start the ONVIF HTTP server in a background thread."""
     handler = type(
-        "BoundOnvifHandler", (OnvifHandler,), {"service": OnvifService(cfg, state)}
+        "BoundOnvifHandler", (OnvifHandler,),
+        {"service": OnvifService(cfg, state, events=events)},
     )
     httpd = ThreadingHTTPServer(("0.0.0.0", cfg.onvif_port), handler)
     httpd.daemon_threads = True

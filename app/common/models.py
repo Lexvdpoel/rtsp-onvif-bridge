@@ -13,13 +13,6 @@ from urllib.parse import urlsplit
 # range so camera MACs are easy to spot in the DHCP server's lease table.
 MAC_PREFIX = "02:1f"
 
-# UniFi mode needs a MAC that looks like Ubiquiti hardware. A console decides
-# what a device is partly from its OUI, and 02:1f is a locally administered
-# address registered to nobody, which a UniFi camera would never have. This is
-# a real Ubiquiti prefix; the remaining bytes still come from the camera's own
-# identity, so the address stays stable and unique.
-UNIFI_MAC_PREFIX = "f4:92:bf"
-
 _SAFE_HOSTNAME = re.compile(r"[^a-zA-Z0-9-]+")
 
 DEFAULTS = {
@@ -30,18 +23,6 @@ DEFAULTS = {
     # virtual MAC from: it survives the source changing IP or password.
     "source_mac": "",
     "enabled": True,
-    # How this camera presents itself to the NVR.
-    #   onvif - the built-in ONVIF device (works with any NVR)
-    #   unifi - unifi-cam-proxy, adopted by UniFi Protect as a native camera
-    "mode": "onvif",
-    "unifi_host": "",
-    "unifi_token": "",
-    "unifi_extra_args": "",
-    # Offer the camera for adoption the way a real one does, instead of
-    # pasting a token.
-    "unifi_discoverable": True,
-    "unifi_model": "UVC_G4_BULLET",
-    "unifi_firmware": "4.71.0",
     "onvif_port": 80,
     "rtsp_port": 554,
     "username": "admin",
@@ -75,6 +56,10 @@ DEFAULTS = {
     "detect_confidence": 0.5,
     "detect_min_hits": 3,
     "detect_cooldown": 30,
+    # How long motion stays true after the last detection. An NVR that only
+    # ever sees motion begin shows a camera that has been moving since it was
+    # plugged in, so the state has to end as well as start.
+    "event_hold": 8,
     "autodetect": True,
     "location": "any",
 }
@@ -90,11 +75,6 @@ def generate_mac(identity: str, prefix: str = MAC_PREFIX) -> str:
     parts = prefix.split(":")
     tail = [digest[i : i + 2] for i in range(0, 2 * (6 - len(parts)), 2)]
     return ":".join(parts + tail)
-
-
-def mac_prefix_for(cam: dict) -> str:
-    """Which OUI this camera's address comes from."""
-    return UNIFI_MAC_PREFIX if cam.get("mode") == "unifi" else MAC_PREFIX
 
 
 def normalize_mac(value: str) -> str:
@@ -132,7 +112,7 @@ def identity_key(cam: dict) -> str:
 def assign_mac(cam: dict, taken: set[str] | None = None) -> str:
     """Pick this camera's MAC, avoiding one already in use by another camera."""
     identity = identity_key(cam)
-    prefix = mac_prefix_for(cam)
+    prefix = MAC_PREFIX
     mac = generate_mac(identity, prefix)
     taken = {m.lower() for m in (taken or set())}
     # Two records pointing at the same source would otherwise collide, and two
@@ -180,6 +160,7 @@ _INT_FIELDS = {
     "detect_fps",
     "detect_min_hits",
     "detect_cooldown",
+    "event_hold",
     "encode_bitrate",
     "onvif_port",
     "rtsp_port",
@@ -195,7 +176,6 @@ _INT_FIELDS = {
 _FLOAT_FIELDS = {"detect_confidence"}
 _BOOL_FIELDS = {
     "enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect", "detect",
-    "unifi_discoverable",
 }
 _IMMUTABLE = {"id", "mac", "serial", "uuid", "created_at"}
 
@@ -223,32 +203,6 @@ def sanitize(payload: dict) -> dict:
     return out
 
 
-def split_proxy_args(text: str) -> tuple[list[str], list[str]]:
-    """Split extra proxy arguments into flags and anything loose.
-
-    unifi-cam-proxy takes the backend name as a positional argument, so a bare
-    word here is read as that name and the proxy refuses to start. Returns the
-    usable arguments and the stray words, so the caller can complain about them
-    rather than pass them on.
-    """
-    try:
-        parts = shlex.split(text or "")
-    except ValueError:
-        return [], [text.strip()] if text and text.strip() else []
-
-    args, stray, expect_value = [], [], False
-    for part in parts:
-        if expect_value:
-            args.append(part)
-            expect_value = False
-        elif part.startswith("-"):
-            args.append(part)
-            expect_value = "=" not in part
-        else:
-            stray.append(part)
-    return args, stray
-
-
 def validate(cam: dict) -> list[str]:
     errors = []
     if not cam.get("name"):
@@ -269,6 +223,8 @@ def validate(cam: dict) -> list[str]:
             errors.append("Detection frame rate must be between 1 and 15.")
         if not 0.1 <= float(cam.get("detect_confidence", 0.5)) <= 0.99:
             errors.append("Detection confidence must be between 0.1 and 0.99.")
+        if not 1 <= int(cam.get("event_hold", 8)) <= 300:
+            errors.append("Motion hold must be between 1 and 300 seconds.")
         wanted = {t.strip() for t in (cam.get("detect_types") or "").split(",") if t.strip()}
         if not wanted:
             errors.append("Pick at least one object type to detect.")
@@ -277,28 +233,6 @@ def validate(cam: dict) -> list[str]:
                 "Detectable types are person, vehicle and animal. "
                 "The detection model has no class for a package."
             )
-    if cam.get("unifi_extra_args"):
-        _, stray = split_proxy_args(cam["unifi_extra_args"])
-        if stray:
-            errors.append(
-                "Extra proxy arguments takes flags only; "
-                + ", ".join(repr(word) for word in stray)
-                + " would be read as a command and the proxy would refuse to start."
-            )
-    if cam.get("mode") not in ("onvif", "unifi"):
-        errors.append("Mode must be onvif or unifi.")
-    if cam.get("mode") == "unifi":
-        # With discovery on, Protect finds the camera and supplies both the
-        # console address and the token itself.
-        if not cam.get("unifi_discoverable") and not (cam.get("unifi_host") or "").strip():
-            errors.append(
-                "UniFi mode needs either discovery, or the address of your "
-                "Protect console."
-            )
-    if cam.get("mode") == "unifi" and cam.get("unifi_model"):
-        from ..camera.unifi_models import MODELS
-        if cam["unifi_model"] not in MODELS:
-            errors.append(f"Unknown UniFi model '{cam['unifi_model']}'.")
     if cam.get("source_mac") and not normalize_mac(cam["source_mac"]):
         errors.append("Source MAC must be 12 hex digits, e.g. a0:bb:3e:11:22:33.")
     if cam.get("output_codec") not in ("copy", "h264", "h265"):
@@ -336,13 +270,6 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "REQUIRE_AUTH": "1" if cam["require_auth"] else "0",
         "PROXY": "1" if cam["proxy"] else "0",
         "RTSP_TRANSPORT": cam.get("rtsp_transport") or "tcp",
-        "MODE": cam.get("mode") or "onvif",
-        "UNIFI_HOST": cam.get("unifi_host") or "",
-        "UNIFI_TOKEN": cam.get("unifi_token") or "",
-        "UNIFI_EXTRA_ARGS": cam.get("unifi_extra_args") or "",
-        "UNIFI_DISCOVERABLE": "1" if cam.get("unifi_discoverable", True) else "0",
-        "UNIFI_MODEL": cam.get("unifi_model") or "UVC_G4_BULLET",
-        "UNIFI_FIRMWARE": cam.get("unifi_firmware") or "4.71.0",
         "OUTPUT_CODEC": cam.get("output_codec") or "copy",
         "HWACCEL": cam.get("hwaccel") or "auto",
         "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),
@@ -355,6 +282,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "DETECT_CONFIDENCE": str(cam.get("detect_confidence") or 0.5),
         "DETECT_MIN_HITS": str(cam.get("detect_min_hits") or 3),
         "DETECT_COOLDOWN": str(cam.get("detect_cooldown") or 30),
+        "EVENT_HOLD": str(cam.get("event_hold") or 8),
         "AUTODETECT": "1" if cam.get("autodetect", True) else "0",
         "VIDEO_WIDTH": str(cam["width"]),
         "VIDEO_HEIGHT": str(cam["height"]),

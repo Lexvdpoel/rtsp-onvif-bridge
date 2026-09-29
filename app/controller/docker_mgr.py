@@ -113,9 +113,6 @@ class DockerManager:
         self.ip_range = os.environ.get("MACVLAN_IP_RANGE", "").strip()
         self.ipam_mode = os.environ.get("MACVLAN_IPAM", "").strip().lower()
         self.state_dir = os.environ.get("STATE_DIR", "/state")
-        # Address of the Protect console, used by any camera that does not name
-        # one of its own.
-        self.default_unifi_host = os.environ.get("UNIFI_HOST", "").strip()
         # Set by the controller once it has a hardware report to consult.
         self.detector = None
         try:
@@ -263,15 +260,12 @@ class DockerManager:
         # "auto" is settled here, where the hardware report is available; the
         # camera container only ever sees a concrete encoder.
         environment["HWACCEL"] = hwaccel
-        if not environment.get("UNIFI_HOST"):
-            environment["UNIFI_HOST"] = self.default_unifi_host
         # A debug switch rather than a setting: set DETECT_DEBUG on the
         # controller and every camera it creates logs what the detector saw,
         # including the candidates it discarded. That is the only way to tell an
         # object that was never detected from one that scored just under the
         # threshold.
-        for passthrough in ("DETECT_DEBUG", "DETECT_DEBUG_FLOOR",
-                            "DETECT_MOTION_HOLD", "UNIFI_LOG_REPEAT_SECONDS"):
+        for passthrough in ("DETECT_DEBUG", "DETECT_DEBUG_FLOOR"):
             value = os.environ.get(passthrough, "").strip()
             if value:
                 environment[passthrough] = value
@@ -400,11 +394,14 @@ class DockerManager:
         self.remove_unraid_template(cam)
 
     def purge(self, cam: dict):
-        """Forget a camera entirely, including its UniFi identity.
+        """Forget a camera entirely, including what it left in the state volume.
 
-        Kept apart from remove(), which also runs on a restart: dropping the
-        certificate there would force the camera to be adopted again every time
-        it was restarted.
+        Kept apart from remove(), which also runs on a restart: this is for a
+        camera that is gone for good, not one that is coming back.
+
+        The certificate files are from the UniFi mode this project used to have.
+        Nothing writes them any more, but a volume from that era still holds
+        them, and deleting a camera should not leave its keys behind.
         """
         certs = os.path.join(self.state_dir, "certs")
         for name in (f"{cam['id']}.pem", f"{cam['id']}-mgmt.json"):

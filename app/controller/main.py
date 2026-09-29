@@ -12,7 +12,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
-from ..camera import unifi_models
 from ..common import models
 from . import backup as backup_mod
 from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
@@ -72,8 +71,42 @@ def _detect_hardware():
         print(f"[controller] hardware detection failed: {exc}")
 
 
+def _migrate_macs():
+    """Move cameras off the Ubiquiti OUI an earlier version gave them.
+
+    UniFi mode needed a MAC that looked like Ubiquiti hardware. That mode is
+    gone, and an address from a real manufacturer's range is now only a way to
+    collide with their equipment. Runs once: after the rewrite every address is
+    already in range, so there is nothing left to match.
+
+    This changes the address a camera takes its DHCP lease on, so it is said
+    plainly rather than done quietly -- the reservation has to be moved with it.
+    """
+    stale = [cam for cam in store.list()
+             if not (cam.get("mac") or "").lower().startswith(models.MAC_PREFIX)]
+    if not stale:
+        return
+    taken = {cam["mac"] for cam in store.list()}
+    for cam in stale:
+        taken.discard(cam["mac"])
+        updated = dict(cam, mac=models.assign_mac(cam, taken))
+        taken.add(updated["mac"])
+        store.upsert(updated)
+        print(
+            f"[controller] '{cam['name']}' moved from {cam['mac']} to "
+            f"{updated['mac']}: the Ubiquiti address it had belonged to UniFi "
+            "mode, which no longer exists. Update its DHCP reservation."
+        )
+        if manager is not None:
+            try:
+                manager.remove(updated)
+            except DockerError as exc:
+                print(f"[controller] could not recreate '{cam['name']}': {exc}")
+
+
 def _autostart():
     """Bring up every camera marked enabled, so a host reboot restores them."""
+    _migrate_macs()
     for cam in store.list():
         if not cam.get("enabled"):
             continue
@@ -233,40 +266,6 @@ def _decorate(cam: dict) -> dict:
     return item
 
 
-def _with_defaults(payload: dict) -> dict:
-    """Fill in settings the operator set once, centrally, rather than per camera."""
-    payload = dict(payload)
-    if payload.get("mode") == "unifi" and not (payload.get("unifi_host") or "").strip():
-        if manager is not None and manager.default_unifi_host:
-            payload["unifi_host"] = manager.default_unifi_host
-    return payload
-
-
-def _reassign_mac_if_mode_changed(cam_id: str, cam: dict) -> dict:
-    """UniFi mode needs a Ubiquiti address, ONVIF mode a private one.
-
-    The MAC is otherwise fixed for life, but the OUI has to match the mode: a
-    console will not take a camera whose address belongs to nobody. Switching
-    mode is a deliberate act and means re-adopting anyway, so the address moves
-    with it — and the DHCP reservation has to be updated to match.
-    """
-    wanted = models.mac_prefix_for(cam)
-    if cam.get("mac", "").lower().startswith(wanted.lower()):
-        return cam
-
-    taken = {other["mac"] for other in store.list() if other["id"] != cam_id}
-    cam = dict(cam, mac=models.assign_mac(cam, taken))
-    store.upsert(cam)
-    print(
-        f"[controller] '{cam['name']}' switched to {cam['mode']} mode; "
-        f"its MAC is now {cam['mac']}"
-    )
-    if manager is not None:
-        # The old identity no longer applies, so any adoption goes with it.
-        manager.purge(cam)
-    return cam
-
-
 def _get_or_404(cam_id: str) -> dict:
     cam = store.get(cam_id)
     if cam is None:
@@ -297,12 +296,10 @@ def status():
             "parent": manager.parent,
             "subnet": manager.subnet,
         }
-        info["defaults"] = {"unifi_host": manager.default_unifi_host}
         try:
             info["network"].update(manager.ensure_network())
         except DockerError as exc:
             info["error"] = str(exc)
-    info["unifi_models"] = unifi_models.choices()
     return info
 
 
@@ -313,7 +310,7 @@ def list_cameras():
 
 @app.post("/api/cameras")
 async def create_camera(request: Request):
-    payload = _with_defaults(await request.json())
+    payload = await request.json()
     draft = dict(models.DEFAULTS)
     draft.update(models.sanitize(payload))
     errors = models.validate(draft)
@@ -340,7 +337,7 @@ def _create_camera_sync(payload: dict):
 @app.put("/api/cameras/{cam_id}")
 async def update_camera(cam_id: str, request: Request):
     cam = _get_or_404(cam_id)
-    payload = _with_defaults(await request.json())
+    payload = await request.json()
 
     draft = dict(cam)
     draft.update(models.sanitize(payload))
@@ -352,7 +349,6 @@ async def update_camera(cam_id: str, request: Request):
 
 def _update_camera_sync(cam_id: str, payload: dict):
     updated = store.update(cam_id, payload)
-    updated = _reassign_mac_if_mode_changed(cam_id, updated)
     mgr = _require_manager()
     try:
         if updated.get("enabled"):

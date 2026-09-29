@@ -283,202 +283,93 @@ precisely so that editing a URL cannot silently invalidate a reservation.
 If two cameras point at the same source, the second automatically gets a different
 MAC: two NICs sharing an address on one LAN break both of them.
 
-## Mode per camera: ONVIF or UniFi Protect
+## Object detection and ONVIF events
 
-Each camera decides how it presents itself.
+Cameras that send pixels and nothing else have no way to tell an NVR that
+something happened. This bridge can watch the stream itself and publish what it
+finds as ONVIF events, which is the channel an NVR already knows how to read.
 
-| Mode | What it does |
-|---|---|
-| **ONVIF** (default) | The built-in ONVIF device this bridge serves. Works with any NVR. UniFi Protect accepts it in its reduced "generic" mode: recording works, AI detections do not. |
-| **UniFi Protect** | Runs `unifi-cam-proxy`, which speaks Protect's own protocol. The camera is adopted like a real UniFi device. |
+Detection runs on the sub stream at a few frames a second, through the relay, so
+the camera is opened once and the detector shares that connection with whatever
+else is reading. The model is SSD MobileNet v1 (COCO) and distinguishes three
+classes: **person**, **vehicle** and **animal**. There is no class for a parcel,
+and inferring one from "suitcase" would be a guess dressed as a detection, so
+package detection is absent rather than faked.
 
-In UniFi mode the ONVIF service is not started — Protect does not use it anyway.
-The RTSP relay does keep running, so your codec conversion and hardware encoding
-still apply: the proxy reads from the local relay.
+### What is published
 
-### Adopting a camera into Protect
+Each finding goes out under several topic names at once. No two NVR vendors
+agreed on one spelling, and publishing an event four ways costs nothing while
+covering far more products than picking a favourite:
 
-Set the mode to **UniFi Protect** and leave **Offer this camera for adoption**
-on. The camera then behaves like a factory one: it offers itself over UDP 10001,
-appears in Protect under devices ready to adopt, and when you click Adopt,
-Protect pushes the management token to the camera itself. Nothing to copy, and no
-60-minute clock.
-
-On the same subnet the broadcast is enough. Across a VLAN, fill in the console
-address as well — see below.
-
-Under the hood that is three things working together:
-
-1. A discovery responder announces the camera over UDP 10001 with a real UniFi
-   model identity — platform and system id — so Protect classifies it as a
-   camera.
-2. An HTTPS endpoint on the camera's own address accepts `POST /api/1.2/manage`,
-   which is what Protect sends when you click Adopt. The payload carries the
-   token and the console to connect back to.
-3. That token starts `unifi-cam-proxy`, which opens the websocket to the console
-   and streams.
-
-The payload is stored beside the camera's certificate, so a restart reconnects
-without adopting again. Deleting the camera discards both, and it has to be
-adopted afresh.
-
-**Announce as** picks which model the camera claims to be. It matters: Protect
-gates features on the model, so choose one whose capabilities match the stream
-you feed it — a G4 line implies H.264, a G5 line H.265.
-
-### A console on another VLAN
-
-**Discovery wants the console on the same layer 2 network as the camera.** That
-is a property of how UniFi adoption works, not of this bridge: a real UniFi
-camera on another VLAN is not discovered either, which is why Ubiquiti has you
-log in to the camera and point it at the Protect host by hand.
-
-When a console address is set, the camera does send its announcement straight to
-it every ten seconds, which is the closest equivalent. Whether a console acts on
-an unsolicited announcement is up to the console, and a routed one may simply
-ignore it. If nothing has adopted the camera after a minute, the log says so and
-points at the alternatives.
-
-So with cameras on 10.51.100.x and Protect on 10.51.0.x you have two options that
-do work:
-
-1. **Put the camera containers on the console's network.** Point
-   `MACVLAN_PARENT` at the interface carrying the Protect VLAN. Discovery is then
-   a plain broadcast and adoption is one click.
-2. **Adopt with a token**, below. Everything after discovery is unicast and
-   routes fine, so this works across VLANs.
-
-If you do run them on separate VLANs, the firewall needs:
-
-| Direction | Port | What for |
+| Topic | Carries | Who reads it |
 |---|---|---|
-| camera → console | UDP 10001 | the announcement |
-| console → camera | TCP 443 | the adoption payload Protect pushes |
-| camera → console | TCP 7442 | the management websocket |
-| camera → console | TCP 7550 | the video stream |
+| `tns1:VideoSource/MotionAlarm` | `State` true/false | almost everything |
+| `tns1:RuleEngine/CellMotionDetector/Motion` | `IsMotion` true/false | the ONVIF Profile S standard for motion |
+| `tns1:RuleEngine/ObjectDetector/Object` | `ObjectType` Human/Vehicle/Animal, `Likelihood` | clients that want to know *what* it was |
+| `tns1:RuleEngine/MyRuleDetector/PeopleDetect` (and `VehicleDetect`, `AnimalDetect`) | `State` true/false | clients written against Hikvision cameras |
 
-The camera offers itself in both generations of the discovery protocol — v1 and
-v2 — because a console only understands a reply in the version it asked in, and
-which one it uses depends on its firmware. The log says which was answered:
+Nothing the model cannot see is advertised. There is no tamper detection, no
+line crossing, no face recognition and no licence plate reading, so no filter in
+your NVR is left waiting on an event that will never arrive.
+
+### Motion is a state, not a ping
+
+Motion turns on when something is in view and off again once nothing has been
+seen for the **motion hold** period. That matters more than it sounds: an NVR
+that only ever receives "motion started" shows a camera that has been moving
+since the day it was plugged in.
+
+Two timers, and they do different jobs:
+
+* **Motion hold** (default 8s) — how long motion stays on after the last frame
+  that saw something. Raise it if your NVR shows motion flickering off between
+  the frames of a slow walk.
+* **Quiet period** (default 30s) — how long before the *same class* is reported
+  as a new smart event. This one only affects the object events; motion is
+  driven by every analysed frame, so a person standing still keeps motion on
+  without generating an event every second.
+
+### How an NVR receives them
+
+Over a PullPoint subscription, which is what ONVIF clients use in practice: the
+NVR calls `CreatePullPointSubscription`, gets back an address of its own, and
+long-polls it with `PullMessages`. Each subscription has its own queue, so two
+systems can watch the same camera without stealing each other's events.
+`Renew` and `Unsubscribe` work; a subscription nothing renews is dropped after
+ten minutes so a vanished NVR stops costing memory.
+
+The camera card shows how many subscribers it has. If detections appear there
+but nothing reaches your NVR, that number is the first thing to look at — "no
+NVR subscribed" means the problem is on the other side.
+
+### A note on UniFi Protect
+
+Protect added motion support for third-party ONVIF cameras in application
+**7.1.55**, and it is reported working in **7.1.60**. On older versions Protect
+does not subscribe to a third-party camera's events at all, so nothing here will
+reach it however correctly it is published. Check your Protect version before
+concluding the camera is at fault.
+
+Whether Protect acts on the *smart* topics — person, vehicle, animal — rather
+than treating everything as plain motion is not something this project can
+confirm. The motion topics are the ones with a working precedent.
+
+### Tuning it
+
+With `DETECT_DEBUG=1` on the controller, every camera logs the candidates it
+discarded alongside the threshold they were measured against:
 
 ```
-[unifi-discovery] answered 10.51.100.1 (v2)
+[detect] candidates: vehicle 0.31, person 0.18 | reporting at >= 0.50 after 3 frames in a row
 ```
 
-### If it still cannot be adopted
+Without that there is no way to tell a detector that saw nothing from one that
+saw the car at 0.31 and threw it away — and those two call for opposite fixes.
+Small or distant objects are the hard case: the model works on a 300x300 image,
+so a car at the far end of a yard is a handful of pixels whatever the source
+resolution.
 
-With discovery off, supply the console address and a token by hand instead.
-Recent Protect versions no longer show a token on the advanced adoption screen.
-Sign in to the console in a browser **with your Ubiquiti cloud account** — a
-local-only account returns an authentication error — and open:
-
-```
-https://<console>/proxy/protect/api/cameras/manage-payload
-```
-
-The response carries the token and the management host:
-
-```json
-{"wifi":{...},"mgmt":{"protocol":"wss","hosts":["10.51.0.1:7442"],"token":"…"}}
-```
-
-The token is valid for 60 minutes and only needed once.
-
-If you know the proxy and miss an option, **Extra proxy arguments** passes
-arguments through unchanged.
-
-`unifi-cam-proxy` is installed from a pinned commit into a virtualenv of its own,
-because its dependencies are unpinned and would otherwise be resolved against
-FastAPI's. One of them, `pyunifiprotect`, has since been renamed to `uiprotect`
-and removed from PyPI, so the successor is installed and the old import path is
-given back with a small shim.
-
-That install is allowed to fail during the build rather than take the whole image
-with it, so watch for it. On success the build prints:
-
-```
-unifi-cam-proxy imports cleanly
-unifi-cam-proxy installed at cc6d3fc…
-```
-
-On failure it prints a warning instead, and a camera set to UniFi mode says so
-rather than failing quietly. To see why it failed, run the install by hand:
-
-```bash
-docker run --rm -it rtsp-onvif-bridge:latest sh -c '
-  curl -fsSL -o /tmp/r.txt https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/cc6d3fc7cdae9f1dfce575627089632aec696403/requirements.txt
-  sed -i "/^pyunifiprotect/d" /tmp/r.txt; echo uiprotect >> /tmp/r.txt
-  python3 -m venv /tmp/v && /tmp/v/bin/pip install -r /tmp/r.txt'
-```
-
-### Object detection
-
-Cameras with no intelligence of their own send pixels and nothing else, so the
-detection happens here. Switch **Detect objects** on for a camera and the
-container watches the **sub stream** — a few frames a second at low resolution is
-enough to tell that someone is there, and it keeps the cost low enough to run
-several cameras at once on a CPU. With no sub stream it falls back to the main one.
-
-The model is SSD MobileNet v1 from the ONNX Model Zoo, trained on COCO, baked into
-the image — the cameras fetch nothing at startup.
-
-| Setting | What it does |
-|---|---|
-| **What to look for** | `person`, `vehicle`, `animal`, or a subset |
-| **Frames per second** | how often it looks; higher reacts faster and costs more |
-| **Confidence threshold** | how sure the model has to be |
-| **Frames before reporting** | how many consecutive frames an object must appear in |
-| **Quiet period** | how long that type stays silent afterwards |
-
-The last two do most of the work. A small model throws out the occasional
-single-frame false positive; requiring several consecutive frames removes them.
-The quiet period means one person walking past is one event rather than one per
-frame.
-
-In **UniFi mode** detections are reported to Protect as smart detections. In ONVIF
-mode Protect has no way to receive them, so they only appear on the camera card in
-this UI.
-
-**Packages are not supported.** COCO has no class for a parcel. Mapping "suitcase"
-onto it was an option, but that is a guess dressed up as a detection. Package
-detection needs a model trained specifically for it.
-
-Being equally plain about **animal**: `unifi-cam-proxy` officially knows only
-person and vehicle. Animal is passed through with the value Protect uses
-internally, which has not been verified against a real console. If it is rejected,
-only animal events are lost.
-
-### What this does not do
-
-There is no two-way audio and no PTZ. Detection runs on the sub stream and has no
-zones: it reports *what* it sees, not *where* in the frame.
-
-Discovery makes the camera adoptable; it does not make it a UniFi camera in every
-respect. Anything Protect expects from real hardware beyond streaming — firmware
-updates, on-camera settings, the features tied to a specific model — is not
-implemented.
-
-### Protect shows the camera as "Camera" rather than its model
-
-An adopted camera appears with the generic label "Camera" instead of "G4 Dome",
-and without the device artwork a real camera gets. The model is sent: it goes out
-in the `model` field of the `ubnt_avclient_hello` adoption message, which is what
-the `--model` flag and the model dropdown feed.
-
-Protect discards it. Between Protect 2.11.21 and 3.0.26 Ubiquiti removed
-`type: o.model` from the adoption handler, so the model arrives and is never
-stored on the device record. This is not something a camera can work around, and
-it affects real proxied cameras the same way.
-
-The workaround people use is to patch Protect itself: in
-`/usr/share/unifi-protect/app/service.js`, find
-`connectionHost:o.connectionHost,connectionPort:o.connectionSecurePort,` and
-insert `type:o.model,` after it, then restart Protect. That edits Ubiquiti's own
-minified source on the console, is undone by every Protect update, and is well
-outside what this project touches — it is recorded here because knowing the cause
-is worth more than guessing at it, not as a recommendation.
-
-Source: [keshavdv/unifi-cam-proxy discussion #374](https://github.com/keshavdv/unifi-cam-proxy/discussions/374).
 
 ## Choosing the outgoing codec
 
@@ -622,12 +513,8 @@ environment (or in `docker-compose.yml`, then restart the cameras).
 | [app/camera/stats.py](app/camera/stats.py) | throughput metering and CBR/VBR inference |
 | [app/camera/transcode.py](app/camera/transcode.py) | codec decision and the ffmpeg command |
 | [app/camera/hwprobe.py](app/camera/hwprobe.py) | test encode per hardware encoder |
+| [app/camera/events.py](app/camera/events.py) | ONVIF topics, subscriptions and the PullPoint queue |
 | [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
-| [app/camera/unifi.py](app/camera/unifi.py) | certificate and invocation for unifi-cam-proxy |
-| [app/camera/unifi_runner.py](app/camera/unifi_runner.py) | proxy camera that forwards detections |
-| [app/camera/unifi_discovery.py](app/camera/unifi_discovery.py) | answers UniFi's discovery probe so the camera can be adopted |
-| [app/camera/unifi_adopt.py](app/camera/unifi_adopt.py) | receives the adoption payload Protect pushes |
-| [app/camera/unifi_models.py](app/camera/unifi_models.py) | UniFi model platforms and system ids |
 | [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
 | [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |
 | [unraid/](unraid/) | Unraid template and icons |
@@ -659,7 +546,7 @@ to this project, and mark the files you changed.
 
 ## Credits
 
-This project stands on other people's work — MediaMTX, unifi-cam-proxy, FFmpeg,
+This project stands on other people's work — MediaMTX, FFmpeg,
 the ONNX Model Zoo and more. [CREDITS.md](CREDITS.md) lists every component with
 the licence it is distributed under, the trademark position, and the one
 obligation that does not come from this repository: the FFmpeg binary inside a

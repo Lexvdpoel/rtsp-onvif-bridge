@@ -21,14 +21,11 @@ from dataclasses import dataclass
 
 from . import (
     detect as detect_mod,
+    events as events_mod,
     mediamtx,
     net,
     probe as probe_mod,
     transcode,
-    unifi,
-    unifi_adopt,
-    unifi_discovery,
-    unifi_models,
 )
 from .onvif_server import serve as serve_onvif
 from .stats import StatsCollector
@@ -80,6 +77,7 @@ class Config:
     detect_confidence: float
     detect_min_hits: int
     detect_cooldown: int
+    event_hold: int
     width: int
     height: int
     fps: int
@@ -88,13 +86,6 @@ class Config:
     height_sub: int
     fps_sub: int
     bitrate_sub: int
-    mode: str
-    unifi_host: str
-    unifi_token: str
-    unifi_extra_args: str
-    unifi_discoverable: bool
-    unifi_model: str
-    unifi_firmware: str
     mac_hint: str
     output_codec: str
     hwaccel: str
@@ -134,6 +125,7 @@ class Config:
             detect_confidence=float(_env("DETECT_CONFIDENCE", "0.5") or 0.5),
             detect_min_hits=_env_int("DETECT_MIN_HITS", 3),
             detect_cooldown=_env_int("DETECT_COOLDOWN", 30),
+            event_hold=_env_int("EVENT_HOLD", 8),
             width=_env_int("VIDEO_WIDTH", 1920),
             height=_env_int("VIDEO_HEIGHT", 1080),
             fps=_env_int("VIDEO_FPS", 15),
@@ -142,13 +134,6 @@ class Config:
             height_sub=_env_int("VIDEO_HEIGHT_SUB", 360),
             fps_sub=_env_int("VIDEO_FPS_SUB", 15),
             bitrate_sub=_env_int("VIDEO_BITRATE_SUB", 512),
-            mode=_env("MODE", "onvif"),
-            unifi_host=_env("UNIFI_HOST"),
-            unifi_token=_env("UNIFI_TOKEN"),
-            unifi_extra_args=_env("UNIFI_EXTRA_ARGS"),
-            unifi_discoverable=_env_bool("UNIFI_DISCOVERABLE", True),
-            unifi_model=_env("UNIFI_MODEL", "UVC_G4_BULLET"),
-            unifi_firmware=_env("UNIFI_FIRMWARE", "4.71.0"),
             mac_hint=_env("CAM_MAC"),
             output_codec=_env("OUTPUT_CODEC", "copy"),
             hwaccel=_env("HWACCEL", "none"),
@@ -172,7 +157,7 @@ class State:
         self.stats: dict = {}
         self.transcode: dict = {}
         self.detections: list = []
-        self.unifi: dict = {}
+        self.event_subscribers = 0
 
     def refresh_from_interface(self):
         self.ip = net.read_ip()
@@ -217,9 +202,8 @@ def _status_payload(cfg: Config, state: State) -> dict:
         "detected": state.detected,
         "stats": state.stats,
         "transcode": state.transcode,
-        "mode": cfg.mode,
-        "unifi": state.unifi,
         "detections": state.detections[-20:],
+        "event_subscribers": state.event_subscribers,
         "advertised": {
             "encoding": cfg.encoding,
             "width": cfg.width,
@@ -275,42 +259,6 @@ def _apply_probe(cfg: Config, state: State, sub: bool = False):
     cfg.encoding = probe_mod.onvif_encoding(result["codec"])
 
 
-def _half_stream(cfg: Config) -> dict | None:
-    """The middle channel: the main stream at half its size.
-
-    Protect asks for three streams of descending quality and sizes its live view
-    around what each one claims to be. A camera with only a main and a sub
-    stream leaves the middle channel with nothing of its own, and the proxy then
-    serves it the main stream while describing it as 1280x720. This fills the
-    gap honestly: a real half-size stream, described as a half-size stream.
-    """
-    if not (cfg.width and cfg.height):
-        return None
-    if cfg.width * cfg.height <= 640 * 480:
-        # The source is already small. Halving it would cost an encoder per
-        # camera to produce something barely distinguishable from the sub
-        # stream, so the middle channel is better off falling back to that.
-        # Counted in pixels rather than per axis, so a wide letterboxed stream
-        # is not excluded for being short.
-        return None
-    width, height = (cfg.width // 4) * 2, (cfg.height // 4) * 2
-    return {
-        "width": width,
-        "height": height,
-        "fps": cfg.fps,
-        # A quarter of the pixels wants roughly a quarter of the bits.
-        "bitrate_kbps": max(256, int((cfg.bitrate or 2048) / 4)),
-        "codec": cfg.output_codec if cfg.output_codec in ("h264", "h265") else "h264",
-    }
-
-
-def _stream_codec(cfg: Config, key: str, state: State) -> str:
-    """What leaves the relay for a stream: the target codec, or the source's."""
-    if cfg.output_codec in ("h264", "h265"):
-        return cfg.output_codec
-    return ((state.detected or {}).get(key) or {}).get("codec", "")
-
-
 def _relay_paths(cfg: Config, state: State) -> dict[str, dict]:
     """Decide per stream whether to relay it as-is or re-encode it.
 
@@ -342,44 +290,13 @@ def _relay_paths(cfg: Config, state: State) -> dict[str, dict]:
         plans[key] = transcode.describe(source_codec, cfg.output_codec, cfg.hwaccel)
         print(f"[relay] {key}: {plans[key]}")
 
-    # The half channel is an extra stream, not a re-encode of an advertised one,
-    # so it must not make the UI claim this camera is being transcoded.
-    transcoding = any(
-        "script" in spec for name, spec in paths.items() if name != "half"
-    )
+    transcoding = any("script" in spec for spec in paths.values())
     if cfg.output_codec in ("h264", "h265"):
         # What leaves the bridge is the requested codec, whether it was
         # re-encoded or already matched.
         cfg.encoding = "H264" if cfg.output_codec == "h264" else "H265"
         if transcoding:
             cfg.bitrate = cfg.encode_bitrate
-
-    # The half-size channel, for UniFi mode only: ONVIF advertises the streams
-    # it has rather than a fixed set of three. It reads from our own relay, not
-    # from the camera again -- the camera is opened once for the main stream and
-    # everything downstream shares it, which is what keeps a camera with a small
-    # session limit from running out.
-    half = _half_stream(cfg) if cfg.mode == "unifi" and "main" in paths else None
-    if half:
-        args = transcode.build_args(
-            source_url=f"rtsp://127.0.0.1:{cfg.rtsp_port}/main",
-            publish_url=f"rtsp://127.0.0.1:{cfg.rtsp_port}/half",
-            output_codec=half["codec"],
-            hwaccel=cfg.hwaccel,
-            bitrate_kbps=half["bitrate_kbps"],
-            preset=cfg.encode_preset,
-            transport="tcp",
-            audio=cfg.audio,
-            scale=(half["width"], half["height"]),
-        )
-        paths["half"] = {
-            "script": mediamtx.write_transcode_script("half", args, transcode.script)
-        }
-        where = "software" if cfg.hwaccel == "none" else cfg.hwaccel
-        print(
-            f"[relay] half: {half['width']}x{half['height']} "
-            f"{half['codec'].upper()} at {half['bitrate_kbps']} kbps ({where})"
-        )
 
     state.transcode = {
         "active": transcoding,
@@ -438,18 +355,17 @@ def main() -> int:
 
     # 2. ONVIF + discovery ------------------------------------------------
     # Brought up before the relay so the device answers straight away; the
-    # stream URI it hands out works as soon as the relay follows. In UniFi mode
-    # Protect speaks its own protocol, so none of this applies.
-    httpd = None
-    discovery = None
-    if cfg.mode != "unifi":
-        httpd = serve_onvif(cfg, state)
-        discovery = DiscoveryResponder(cfg, state)
-        discovery.start()
-        print(
-            f"[camera] ONVIF ready at "
-            f"http://{state.ip}:{cfg.onvif_port}/onvif/device_service"
-        )
+    # stream URI it hands out works as soon as the relay follows.
+    # The detector fills this and the event service drains it, so both halves
+    # have to be handed the same one.
+    events = events_mod.EventBroker(hold=cfg.event_hold)
+    httpd = serve_onvif(cfg, state, events=events)
+    discovery = DiscoveryResponder(cfg, state)
+    discovery.start()
+    print(
+        f"[camera] ONVIF ready at "
+        f"http://{state.ip}:{cfg.onvif_port}/onvif/device_service"
+    )
 
     # 3. detect the source ------------------------------------------------
     # Whether a transcode is needed depends on the source codec, so this has to
@@ -473,132 +389,15 @@ def main() -> int:
         collector = StatsCollector()
         collector.start()
 
-    # 4b. UniFi Protect ----------------------------------------------------
-    unifi_proc = None
-    unifi_args: list[str] = []
-    discovery_responder = None
-    adopt_server = None
-    if cfg.mode == "unifi":
-        # Point the proxy at our own relay when it is running, so the codec
-        # conversion and hardware encoding still apply on the way to Protect.
-        stream_url = (
-            f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy else cfg.source_url
-        )
-        # One entry per Protect channel, best first: the main stream, a
-        # half-size copy of it, and the camera's own sub stream. Built together
-        # with what each one really contains, so the description Protect gets
-        # cannot disagree with what arrives.
-        streams: list[tuple[str, dict]] = [(stream_url, {
-            "width": cfg.width, "height": cfg.height, "fps": cfg.fps,
-            "bitrate_kbps": cfg.bitrate,
-            "codec": _stream_codec(cfg, "main", state),
-        })]
-        half = _half_stream(cfg) if cfg.proxy else None
-        if half:
-            streams.append((f"rtsp://127.0.0.1:{cfg.rtsp_port}/half", half))
-        if cfg.source_url_sub:
-            streams.append((
-                f"rtsp://127.0.0.1:{cfg.rtsp_port}/sub" if cfg.proxy
-                else cfg.source_url_sub,
-                {"width": cfg.width_sub, "height": cfg.height_sub,
-                 "fps": cfg.fps_sub, "bitrate_kbps": cfg.bitrate_sub,
-                 "codec": _stream_codec(cfg, "sub", state)},
-            ))
-        proxy_sources, channel_specs = unifi.channel_plan(streams)
-        state_dir = _env("STATE_DIR", "/state")
-        try:
-            cert = unifi.ensure_certificate(cfg.id, state_dir)
-        except Exception as exc:  # noqa: BLE001
-            cert = ""
-            state.message = f"Could not prepare the UniFi certificate: {exc}"
-            print(f"[unifi] {state.message}")
-
-        def launch_proxy(token: str, host: str) -> None:
-            nonlocal unifi_proc, unifi_args
-            try:
-                unifi_args = unifi.build_args(cfg, state, cert, stream_url,
-                                              token=token, host=host,
-                                              sources=proxy_sources)
-                unifi_proc = unifi.start(unifi_args, specs=channel_specs)
-                state.message = ""
-            except Exception as exc:  # noqa: BLE001 - reported, never fatal
-                state.message = f"UniFi proxy failed to start: {exc}"
-                print(f"[unifi] {state.message}")
-
-        if cert:
-            identity = unifi_models.identity(cfg.unifi_model)
-            stored = unifi_adopt.load_payload(cfg.id, state_dir)
-            # The discovery setting decides where the credentials come from.
-            # Letting a leftover token quietly win would disable discovery
-            # without anything saying so.
-            if cfg.unifi_discoverable:
-                token = stored.get("token", "")
-                host = stored.get("host", "")
-                if stored.get("port") and host and ":" not in host:
-                    host = f"{host}:{stored['port']}"
-            else:
-                token = cfg.unifi_token
-                host = cfg.unifi_host
-
-            state.unifi = {
-                "model": identity["model"],
-                "adopted": bool(token and host),
-                "console": host,
-                "discoverable": cfg.unifi_discoverable,
-            }
-
-            if token and host:
-                launch_proxy(token, host)
-            elif cfg.unifi_discoverable:
-                # Offer ourselves the way a factory camera does: answer the
-                # discovery probe, then take the token Protect pushes to us.
-                def adopted(payload: dict) -> None:
-                    console = f"{payload['host']}:{payload['port']}"
-                    state.unifi = dict(state.unifi, adopted=True, console=console)
-                    print(f"[unifi] adopted by {console}; starting the proxy")
-                    launch_proxy(payload["token"], console)
-
-                service = unifi_adopt.AdoptionService(
-                    cfg, state, identity, state_dir, on_adopted=adopted
-                )
-                try:
-                    adopt_server = unifi_adopt.serve(service, cert)
-                except Exception as exc:  # noqa: BLE001
-                    state.message = f"Adoption endpoint failed to start: {exc}"
-                    print(f"[unifi] {state.message}")
-                discovery_responder = unifi_discovery.DiscoveryResponder(
-                    cfg, state, identity,
-                    adoptable=lambda: not service.adopted.is_set(),
-                    # Known console address: announce to it as well, so a
-                    # console behind a router still sees the camera.
-                    console=cfg.unifi_host,
-                )
-                discovery_responder.start()
-                print(
-                    "[unifi] waiting to be adopted; the camera should appear in "
-                    "Protect under devices ready to adopt"
-                )
-            else:
-                state.message = (
-                    "UniFi mode needs either discovery or an adoption token."
-                )
-                print(f"[unifi] {state.message}")
-
-    # 4c. object detection ------------------------------------------------
+    # 5. object detection --------------------------------------------------
     detector = None
     if cfg.detect:
-        sink = detect_mod.UnifiSink(_env_int("DETECT_BRIDGE_PORT", 8099)) \
-            if cfg.mode == "unifi" else None
-
         def on_detection(object_type: str, score: float):
-            # Always recorded so the bridge's own UI can show it; in UniFi mode
-            # it is also handed to the proxy, which reports it to Protect.
             state.detections.append(
                 {"type": object_type, "score": round(score, 3), "at": time.time()}
             )
             del state.detections[:-50]
-            if sink is not None:
-                sink(object_type, score)
+            events.note_detection(object_type, score)
 
         # Read through the relay when there is one, so the camera is opened
         # once for the sub stream and the detector shares it with whatever else
@@ -607,7 +406,8 @@ def main() -> int:
         if cfg.proxy:
             path = "sub" if cfg.source_url_sub else "main"
             relay_url = f"rtsp://127.0.0.1:{cfg.rtsp_port}/{path}"
-        detector = detect_mod.Detector(cfg, on_detection, relay_url=relay_url)
+        detector = detect_mod.Detector(cfg, on_detection, relay_url=relay_url,
+                                       on_frame=events.note_presence)
         detector.start()
 
     state.status = "running"
@@ -632,9 +432,6 @@ def main() -> int:
         if relay_proc is not None and relay_proc.poll() is not None:
             print("[camera] RTSP relay exited; restarting it")
             relay_proc = mediamtx.start()
-        if unifi_proc is not None and unifi_proc.poll() is not None:
-            print("[unifi] proxy exited; restarting it")
-            unifi_proc = unifi.start(unifi_args)
         if dhcp_proc is not None and dhcp_proc.poll() is not None:
             print("[camera] DHCP client exited; restarting it")
             dhcp_proc = net.start_dhcp(cfg.hostname, "/tmp/lease.env")
@@ -647,22 +444,20 @@ def main() -> int:
             if cfg.autodetect and measured and not _probed_bitrate(state):
                 cfg.bitrate = measured
 
+        state.event_subscribers = events.subscribers
         state.status = "running" if state.ip else "no-address"
         state_file.write(_status_payload(cfg, state))
 
-    if discovery_responder is not None:
-        discovery_responder.stop()
-    if adopt_server is not None:
-        adopt_server.shutdown()
     if detector is not None:
         detector.stop()
+    events.stop()
     if collector is not None:
         collector.stop()
     if discovery is not None:
         discovery.stop()
     if httpd is not None:
         httpd.shutdown()
-    for proc in (relay_proc, dhcp_proc, unifi_proc):
+    for proc in (relay_proc, dhcp_proc):
         if proc is not None and proc.poll() is None:
             proc.terminate()
     state.status = "stopped"

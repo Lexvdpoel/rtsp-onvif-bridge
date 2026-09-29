@@ -256,87 +256,6 @@
       <h2 id="editTitle" style="margin:0 0 18px;font-size:17px;">Add camera</h2>
 
       <fieldset>
-        <legend>How this camera is published</legend>
-        <div class="form-grid">
-          <div class="wide">
-            <label for="f-mode">Mode</label>
-            <select id="f-mode" name="mode">
-              <option value="onvif">ONVIF device — works with any NVR</option>
-              <option value="unifi">UniFi Protect — adopted as a native camera</option>
-            </select>
-            <div class="hint">
-              ONVIF is the built-in device this bridge serves; UniFi Protect accepts it in its
-              reduced "generic" mode. UniFi mode instead runs unifi-cam-proxy, which speaks
-              Protect's own protocol, so the camera is adopted like a real UniFi one. Switching
-              mode means re-adopting the camera in your NVR.
-            </div>
-          </div>
-        </div>
-      </fieldset>
-
-      <fieldset id="unifiFields" hidden>
-        <legend>UniFi Protect</legend>
-        <div class="form-grid">
-          <div class="wide check" style="margin-top:0">
-            <input type="checkbox" id="f-unifi-discoverable" name="unifi_discoverable" checked>
-            <label for="f-unifi-discoverable" style="margin:0">
-              Offer this camera for adoption, the way a real one does
-            </label>
-          </div>
-          <div class="wide hint">
-            With this on, the camera offers itself the way a real one does and appears in Protect
-            under devices ready to adopt. Click Adopt there and Protect hands the camera its token
-            itself — nothing to copy, and no 60-minute clock. On the same subnet the broadcast is
-            enough; across a VLAN, fill in the console address below and the camera announces
-            itself to it directly.
-          </div>
-          <div>
-            <label for="f-unifi-model">Announce as</label>
-            <select id="f-unifi-model" name="unifi_model"></select>
-            <div class="hint">
-              Protect gates features on the model. Pick one whose capabilities match the stream
-              you feed it: a G4 line implies H.264, a G5 line H.265.
-            </div>
-          </div>
-          <div>
-            <label for="f-unifi-firmware">Firmware it reports</label>
-            <input type="text" id="f-unifi-firmware" name="unifi_firmware" value="4.71.0">
-          </div>
-          <div>
-            <label for="f-unifi-host">Protect console address</label>
-            <input type="text" id="f-unifi-host" name="unifi_host" placeholder="10.51.0.1">
-            <div class="hint" id="unifiHostHint"></div>
-          </div>
-          <div id="unifiManual">
-            <label for="f-unifi-token">Adoption token</label>
-            <input type="text" id="f-unifi-token" name="unifi_token" autocomplete="off">
-          </div>
-          <div class="wide">
-            <label for="f-unifi-extra">Extra proxy arguments (optional)</label>
-            <input type="text" id="f-unifi-extra" name="unifi_extra_args"
-                   placeholder="--verbose">
-            <div class="hint">
-              Flags only, passed through unchanged. The name, model, firmware and IP are
-              already sent for you, so there is normally nothing to put here. A bare word
-              rather than a flag will be read as a command and the proxy will refuse to start.
-            </div>
-          </div>
-          <div class="wide hint">
-            The address and token appear below only when discovery is off. Recent
-            Protect versions no longer show a token on the advanced adoption screen; get one by
-            signing in to the console in a browser <strong>with your Ubiquiti cloud account</strong>
-            — a local-only account returns an authentication error — and opening
-            <code>https://&lt;console&gt;/proxy/protect/api/cameras/manage-payload</code>. It is
-            valid for 60 minutes.
-            <br><br>
-            Either way, once adopted the camera is recognised by a client certificate generated
-            here and kept with its state, so it stays adopted across restarts. Deleting the camera
-            discards that identity and it has to be adopted again.
-          </div>
-        </div>
-      </fieldset>
-
-      <fieldset>
         <legend>Source</legend>
         <div class="form-grid">
           <div class="wide">
@@ -368,7 +287,7 @@
         </div>
       </fieldset>
 
-      <fieldset id="onvifFields">
+      <fieldset>
         <legend>ONVIF device</legend>
         <div class="form-grid">
           <div>
@@ -498,8 +417,7 @@
           <div class="wide hint">
             Runs on the sub stream, which is small enough to keep the cost down; without one it
             falls back to the main stream. Detection happens here, so it works with cameras that
-            have no intelligence of their own. In UniFi mode the findings are reported to Protect
-            as smart detections; in ONVIF mode Protect has no way to receive them, so they are
+            have no intelligence of their own. The findings are published as ONVIF events and
             only listed here.
           </div>
           <div class="wide">
@@ -528,10 +446,27 @@
             <label for="f-detect-cooldown">Quiet period (seconds)</label>
             <input type="number" id="f-detect-cooldown" name="detect_cooldown" value="30" min="1" max="600">
           </div>
+          <div>
+            <label for="f-event-hold">Motion hold (seconds)</label>
+            <input type="number" id="f-event-hold" name="event_hold" value="8" min="1" max="300">
+          </div>
           <div class="wide hint">
             An object has to appear in several consecutive frames before it counts, which throws
             away the single-frame flickers a small model produces. After reporting, that type
             stays quiet for the period above, so one person walking past is one event.
+            Motion itself is a state rather than a ping: it turns on when something is in view
+            and off again once nothing has been seen for the hold time.
+          </div>
+          <div class="wide hint">
+            Findings are published as ONVIF events, which an NVR reads by subscribing to this
+            camera. Each one goes out under several topic names, because no two products agreed
+            on one:
+            <code>tns1:VideoSource/MotionAlarm</code> and
+            <code>tns1:RuleEngine/CellMotionDetector/Motion</code> for motion,
+            <code>tns1:RuleEngine/ObjectDetector/Object</code> carrying the class, and
+            <code>tns1:RuleEngine/MyRuleDetector/PeopleDetect</code> and its siblings for the
+            clients that expect one rule per class. Nothing the model cannot see is advertised,
+            so no filter in your NVR is left waiting on an event that never comes.
           </div>
         </div>
       </fieldset>
@@ -636,8 +571,6 @@ let cameras = [];
 let editingId = null;
 let logCameraId = null;
 let pendingBackup = null;
-let serverDefaults = {};
-let unifiModels = [];
 let timers = [];
 
 // Client-side throughput history, keyed by camera id. The API reports an
@@ -769,14 +702,6 @@ function detectedText(cam) {
   return parts.filter(Boolean).join(" · ");
 }
 
-function adoptionText(cam) {
-  const info = (cam.runtime || {}).unifi || {};
-  if (!info.model) return "starting…";
-  if (info.adopted) return `adopted by ${info.console} (as ${info.model})`;
-  if (info.discoverable) return `waiting to be adopted (as ${info.model})`;
-  return "not adopted; no token configured";
-}
-
 function detectText(cam) {
   if (!cam.detect) return "off";
   const seen = ((cam.runtime || {}).detections || []);
@@ -784,6 +709,16 @@ function detectText(cam) {
   const last = seen[seen.length - 1];
   const ago = Math.max(0, Math.round(Date.now() / 1000 - last.at));
   return `${last.type} ${ago}s ago (${seen.length} recent)`;
+}
+
+function eventsText(cam) {
+  // Whether anything is listening is the first thing to check when detections
+  // appear here but not in the NVR.
+  const runtime = cam.runtime || {};
+  if (runtime.event_subscribers === undefined) return "starting…";
+  if (!runtime.event_subscribers) return "no NVR subscribed";
+  const n = runtime.event_subscribers;
+  return `${n} subscriber${n === 1 ? "" : "s"}`;
 }
 
 function outputText(cam) {
@@ -880,9 +815,8 @@ function render() {
           ${field("RTSP stream", runtime.rtsp_url, true)}
           ${field("Source", cam.source_url, true)}
           ${field("Detected stream", detectedText(cam))}
-          ${field("Mode", cam.mode === "unifi" ? "UniFi Protect (native)" : "ONVIF")}
-          ${cam.mode === "unifi" ? field("Adoption", adoptionText(cam)) : ""}
           ${field("Detection", detectText(cam))}
+          ${cam.detect ? field("ONVIF events", eventsText(cam)) : ""}
           ${field("Output", outputText(cam))}
           ${field("Encoder", encoderText(cam))}
           ${field("Rate control", rateModeText(cam))}
@@ -962,17 +896,6 @@ async function refreshStatus() {
     netPill.querySelector(".dot").className = "dot " + (netOk ? "ok" : "warn");
     netPill.querySelector("span:last-child").textContent =
       netOk ? `${net.name} on ${net.parent || "?"}` : "network not ready";
-
-    serverDefaults = info.defaults || {};
-    if (info.unifi_models && info.unifi_models.length !== unifiModels.length) {
-      unifiModels = info.unifi_models;
-      const select = $("#f-unifi-model");
-      const chosen = select.value;
-      select.innerHTML = unifiModels
-        .map((m) => `<option value="${m}">${m.replace("UVC_", "").replace(/_/g, " ")}</option>`)
-        .join("");
-      if (chosen) select.value = chosen;
-    }
 
     const banner = $("#banner");
     banner.hidden = !info.error;
@@ -1087,28 +1010,6 @@ document.addEventListener("mousemove", (event) => {
 
 // --------------------------------------------------------------------- editing
 
-function applyMode() {
-  const unifi = $("#f-mode").value === "unifi";
-  // In UniFi mode Protect speaks its own protocol, so the ONVIF credentials and
-  // ports play no part.
-  $("#unifiFields").hidden = !unifi;
-  $("#onvifFields").hidden = unifi;
-  // With discovery on Protect supplies the token itself, so that field only
-  // gets in the way. The console address stays: it is what lets the camera
-  // announce itself across a routed network.
-  const discoverable = $("#f-unifi-discoverable").checked;
-  $("#unifiManual").hidden = discoverable;
-  $("#unifiHostHint").textContent = discoverable
-    ? "Optional on the same subnet, where the broadcast finds the camera. Required "
-      + "when the console is on another VLAN: the camera then announces itself "
-      + "straight to this address, which is what you would otherwise type into a "
-      + "real camera's own web interface."
-    : "Required: with discovery off, this is the console the camera connects to.";
-}
-
-$("#f-mode").addEventListener("change", applyMode);
-$("#f-unifi-discoverable").addEventListener("change", applyMode);
-
 function fillForm(cam) {
   const form = $("#editForm");
   form.reset();
@@ -1125,11 +1026,6 @@ async function openEdit(cam) {
   editingId = cam ? cam.id : null;
   $("#editTitle").textContent = cam ? "Edit camera" : "Add camera";
   fillForm(cam);
-  // Set once centrally rather than typed per camera.
-  if (!$("#f-unifi-host").value && serverDefaults.unifi_host) {
-    $("#f-unifi-host").value = serverDefaults.unifi_host;
-  }
-  applyMode();
   if (cam) {
     try {
       const secret = await api(`/api/cameras/${cam.id}/password`);

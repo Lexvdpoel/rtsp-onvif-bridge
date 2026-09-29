@@ -12,7 +12,7 @@
   <Overview>
     Publishes RTSP streams as virtual ONVIF cameras. Each camera runs in its own
     container with its own MAC address and takes its own DHCP lease, so an NVR
-    such as UniFi Protect sees them as separate physical devices.
+    sees them as separate physical devices.
 
     Build the image first on the Unraid terminal:
     cd /mnt/user/appdata/rtsp-onvif-bridge &amp;&amp; docker build -t rtsp-onvif-bridge:latest .
@@ -56,10 +56,6 @@
   <Config Name="LAN interface (MACVLAN_PARENT)" Target="MACVLAN_PARENT" Default="br0"
           Description="Host interface the virtual cameras hang off. Usually br0 on Unraid; check with: ip -br link"
           Type="Variable" Display="always" Required="true" Mask="false">br0</Config>
-
-  <Config Name="UniFi Protect console (UNIFI_HOST)" Target="UNIFI_HOST" Default=""
-          Description="Only needed for cameras set to UniFi mode. Pre-fills the console address so you do not type it per camera."
-          Type="Variable" Display="always" Required="false" Mask="false"></Config>
 
   <Config Name="Role" Target="ROLE" Default="controller"
           Description="Leave on controller. The same image also runs the camera role, which the controller starts itself."

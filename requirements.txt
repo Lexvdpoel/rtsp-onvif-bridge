@@ -3,10 +3,6 @@ uvicorn[standard]==0.34.0
 jinja2==3.1.5
 docker==7.1.0
 
-# unifi-cam-proxy is deliberately absent here. It is installed into its own
-# virtualenv in the Dockerfile: its dependencies are unpinned and would fight
-# with FastAPI's, and it targets an older Python than this image runs.
-
 # On-camera object detection (per-camera opt-in).
 onnxruntime==1.20.1
 numpy==2.2.1

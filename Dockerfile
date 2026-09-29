@@ -11,11 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         busybox \
         iproute2 \
         ffmpeg \
-        netcat-openbsd \
         ca-certificates \
         curl \
-        openssl \
-        python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # VA-API drivers, so hardware encoding can use an Intel or AMD render node.
@@ -52,68 +49,6 @@ WORKDIR /opt/bridge
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-
-# unifi-cam-proxy, for the optional UniFi Protect mode, in a virtualenv of its
-# own. Three reasons it cannot share the environment above: its dependencies are
-# unpinned and pyunifiprotect would drag in a pydantic that fights with
-# FastAPI's; it declares support up to Python 3.11 while this image runs 3.12,
-# so the venv is built on Debian's python3; and it is not on PyPI in any current
-# form, so it comes from a pinned commit.
-#
-# One of its pinned requirements, pyunifiprotect, was renamed to uiprotect and
-# removed from PyPI, so the requirements no longer install as published. The
-# successor is swapped in and the old import path given back with a shim:
-# unifi/main.py is the only place that imports it, and only for the top-level
-# ProtectApiClient. Pillow and OpenCV are added for a related reason: a backend
-# this project never uses pulls them in, and while the failed import is not fatal
-# it prints an ImportError on every start that reads like a fault.
-#
-# websockets is pinned for the same class of reason. The proxy asks for
-# >=9.0.1, but 14.0 made the new asyncio client the default: extra_headers
-# became additional_headers and InvalidStatusCode became InvalidStatus. The
-# proxy uses both of the old names, so an unpinned install builds fine and then
-# dies with a TypeError the moment it dials the console. The build asserts the
-# pin still buys what it is for, so the day upstream moves on, this says so
-# instead of quietly holding an old version forever.
-#
-# The install is allowed to fail. It is an opt-in feature, the upstream project
-# pins nothing and pulls one dependency straight from a branch archive, so a
-# break there should not cost everyone else their image. A camera set to UniFi
-# mode without it says so plainly instead of failing quietly. The import is
-# checked here so a half-working install fails at build time, not at adoption.
-ARG UNIFI_CAM_PROXY_REF=cc6d3fc7cdae9f1dfce575627089632aec696403
-RUN set -eu; \
-    python3 -m venv /opt/unifi-venv; \
-    if curl -fsSL -o /tmp/ucp-requirements.txt \
-        "https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/${UNIFI_CAM_PROXY_REF}/requirements.txt"; \
-    then \
-        sed -i '/^pyunifiprotect/d' /tmp/ucp-requirements.txt; \
-        sed -i 's/^websockets.*/websockets==13.1/' /tmp/ucp-requirements.txt; \
-        echo "uiprotect" >> /tmp/ucp-requirements.txt; \
-        echo "pillow" >> /tmp/ucp-requirements.txt; \
-        echo "opencv-python-headless" >> /tmp/ucp-requirements.txt; \
-    fi; \
-    if /opt/unifi-venv/bin/pip install --no-cache-dir -r /tmp/ucp-requirements.txt \
-       && /opt/unifi-venv/bin/pip install --no-cache-dir --no-deps \
-        "https://github.com/keshavdv/unifi-cam-proxy/archive/${UNIFI_CAM_PROXY_REF}.tar.gz"; \
-    then \
-        printf '%s\n' \
-            '"""Compatibility shim.' \
-            '' \
-            'unifi-cam-proxy imports pyunifiprotect, which was renamed to uiprotect' \
-            'and removed from PyPI. Only ProtectApiClient is used, from the top level.' \
-            '"""' \
-            'from uiprotect import *  # noqa: F401,F403' \
-            'from uiprotect import ProtectApiClient  # noqa: F401' \
-            > "$(/opt/unifi-venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/pyunifiprotect.py"; \
-        /opt/unifi-venv/bin/python -c 'import unifi.main; print("unifi-cam-proxy imports cleanly")'; \
-        /opt/unifi-venv/bin/python -c 'import inspect, websockets; assert "extra_headers" in inspect.signature(websockets.connect).parameters; assert hasattr(websockets.exceptions, "InvalidStatusCode"); print("websockets", websockets.__version__, "still speaks the proxy dialect")'; \
-        echo "unifi-cam-proxy installed at ${UNIFI_CAM_PROXY_REF}"; \
-    else \
-        echo "WARNING: unifi-cam-proxy could not be installed; UniFi mode will be unavailable"; \
-        rm -rf /opt/unifi-venv; \
-    fi; \
-    rm -f /tmp/ucp-requirements.txt
 
 COPY docker/udhcpc.script /usr/local/share/udhcpc.script
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

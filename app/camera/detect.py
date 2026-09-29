@@ -9,8 +9,8 @@ The model is SSD MobileNet v1 from the ONNX model zoo, trained on COCO. It does
 its own non-maximum suppression, so what comes out is already a short list of
 boxes rather than a field of overlapping candidates.
 
-UniFi Protect groups detections into a handful of types. COCO's classes are
-mapped onto those; COCO has no class for a parcel, so package detection is not
+Detections are grouped into a handful of types. COCO's classes are mapped onto
+those; COCO has no class for a parcel, so package detection is not
 possible with this model and is deliberately absent rather than faked from
 "suitcase".
 """
@@ -162,51 +162,21 @@ def frame_reader(source_url: str, transport: str, fps: float) -> subprocess.Pope
     return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 
-class UnifiSink:
-    """Hands a detection to the proxy process over loopback."""
-
-    def __init__(self, port: int, host: str = "127.0.0.1"):
-        self.host = host
-        self.port = port
-        self._sock = None
-
-    def _connect(self):
-        import socket
-
-        self._sock = socket.create_connection((self.host, self.port), timeout=5)
-
-    def __call__(self, object_type: str, score: float):
-        import socket
-
-        payload = f"{object_type} {score:.3f}\n".encode()
-        for attempt in (1, 2):
-            try:
-                if self._sock is None:
-                    self._connect()
-                self._sock.sendall(payload)
-                return
-            except OSError:
-                # The proxy restarts independently, so one dropped connection is
-                # expected; reconnect once before giving up on this event.
-                if self._sock is not None:
-                    try:
-                        self._sock.close()
-                    except OSError:
-                        pass
-                self._sock = None
-                if attempt == 2:
-                    raise
-
-
 class Detector(threading.Thread):
     """Watches a stream and calls back when something shows up."""
 
     FRAME_BYTES = INPUT_SIZE * INPUT_SIZE * 3
 
-    def __init__(self, cfg, on_event, model=None, relay_url: str = ""):
+    def __init__(self, cfg, on_event, model=None, relay_url: str = "",
+                 on_frame=None):
         super().__init__(name="detect", daemon=True)
         self.cfg = cfg
         self.on_event = on_event
+        # Called for every analysed frame with whatever was above threshold,
+        # where on_event fires only for what survived the tracker. Motion is a
+        # state and needs the raw view: with only the tracked events to go on,
+        # a person standing still would make it flap on and off.
+        self.on_frame = on_frame
         self.model = model
         self.relay_url = relay_url
         self.tracker = Tracker(cfg.detect_min_hits, cfg.detect_cooldown)
@@ -279,6 +249,12 @@ class Detector(threading.Thread):
 
         if seen:
             self._log_candidates(seen)
+
+        if self.on_frame is not None:
+            try:
+                self.on_frame(best)
+            except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
+                print(f"[detect] could not report presence: {exc}")
 
         for object_type, score in self.tracker.update(best):
             print(f"[detect] {object_type} ({score:.2f})")
