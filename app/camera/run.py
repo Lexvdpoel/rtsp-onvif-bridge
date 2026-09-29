@@ -429,12 +429,17 @@ def main() -> int:
         if cert:
             identity = unifi_models.identity(cfg.unifi_model)
             stored = unifi_adopt.load_payload(cfg.id, state_dir)
-            # A token typed in by hand still wins; it is the escape hatch for a
-            # console that discovery cannot reach.
-            token = cfg.unifi_token or stored.get("token", "")
-            host = cfg.unifi_host or stored.get("host", "")
-            if stored.get("port") and host and ":" not in host:
-                host = f"{host}:{stored['port']}"
+            # The discovery setting decides where the credentials come from.
+            # Letting a leftover token quietly win would disable discovery
+            # without anything saying so.
+            if cfg.unifi_discoverable:
+                token = stored.get("token", "")
+                host = stored.get("host", "")
+                if stored.get("port") and host and ":" not in host:
+                    host = f"{host}:{stored['port']}"
+            else:
+                token = cfg.unifi_token
+                host = cfg.unifi_host
 
             state.unifi = {
                 "model": identity["model"],

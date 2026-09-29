@@ -301,13 +301,17 @@
             <label for="f-unifi-firmware">Firmware it reports</label>
             <input type="text" id="f-unifi-firmware" name="unifi_firmware" value="4.71.0">
           </div>
-          <div>
-            <label for="f-unifi-host">Protect console address</label>
-            <input type="text" id="f-unifi-host" name="unifi_host" placeholder="192.168.1.1">
-          </div>
-          <div>
-            <label for="f-unifi-token">Adoption token</label>
-            <input type="text" id="f-unifi-token" name="unifi_token" autocomplete="off">
+          <div id="unifiManual" class="wide">
+            <div class="form-grid">
+              <div>
+                <label for="f-unifi-host">Protect console address</label>
+                <input type="text" id="f-unifi-host" name="unifi_host" placeholder="192.168.1.1">
+              </div>
+              <div>
+                <label for="f-unifi-token">Adoption token</label>
+                <input type="text" id="f-unifi-token" name="unifi_token" autocomplete="off">
+              </div>
+            </div>
           </div>
           <div class="wide">
             <label for="f-unifi-extra">Extra proxy arguments (optional)</label>
@@ -315,7 +319,7 @@
                    placeholder="--name &quot;Front door&quot;">
           </div>
           <div class="wide hint">
-            The address and token below are only needed with discovery switched off. Recent
+            The address and token appear below only when discovery is off. Recent
             Protect versions no longer show a token on the advanced adoption screen; get one by
             signing in to the console in a browser <strong>with your Ubiquiti cloud account</strong>
             — a local-only account returns an authentication error — and opening
@@ -1081,9 +1085,13 @@ function applyMode() {
   // ports play no part.
   $("#unifiFields").hidden = !unifi;
   $("#onvifFields").hidden = unifi;
+  // With discovery on, Protect supplies both the console address and the token,
+  // so showing the fields for them would only invite filling them in.
+  $("#unifiManual").hidden = $("#f-unifi-discoverable").checked;
 }
 
 $("#f-mode").addEventListener("change", applyMode);
+$("#f-unifi-discoverable").addEventListener("change", applyMode);
 
 function fillForm(cam) {
   const form = $("#editForm");
