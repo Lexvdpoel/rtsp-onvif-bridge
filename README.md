@@ -458,6 +458,28 @@ respect. Anything Protect expects from real hardware beyond streaming — firmwa
 updates, on-camera settings, the features tied to a specific model — is not
 implemented.
 
+### Protect shows the camera as "Camera" rather than its model
+
+An adopted camera appears with the generic label "Camera" instead of "G4 Dome",
+and without the device artwork a real camera gets. The model is sent: it goes out
+in the `model` field of the `ubnt_avclient_hello` adoption message, which is what
+the `--model` flag and the model dropdown feed.
+
+Protect discards it. Between Protect 2.11.21 and 3.0.26 Ubiquiti removed
+`type: o.model` from the adoption handler, so the model arrives and is never
+stored on the device record. This is not something a camera can work around, and
+it affects real proxied cameras the same way.
+
+The workaround people use is to patch Protect itself: in
+`/usr/share/unifi-protect/app/service.js`, find
+`connectionHost:o.connectionHost,connectionPort:o.connectionSecurePort,` and
+insert `type:o.model,` after it, then restart Protect. That edits Ubiquiti's own
+minified source on the console, is undone by every Protect update, and is well
+outside what this project touches — it is recorded here because knowing the cause
+is worth more than guessing at it, not as a recommendation.
+
+Source: [keshavdv/unifi-cam-proxy discussion #374](https://github.com/keshavdv/unifi-cam-proxy/discussions/374).
+
 ## Choosing the outgoing codec
 
 Per camera you set what the NVR receives:
