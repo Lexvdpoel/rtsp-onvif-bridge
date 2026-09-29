@@ -1,64 +1,65 @@
 # RTSP → ONVIF bridge
 
-Zet willekeurige RTSP-streams om in virtuele ONVIF-camera's. Elke virtuele camera
-draait in een eigen container, krijgt een eigen MAC-adres en haalt via DHCP een
-eigen IP op. Voor een NVR — UniFi Protect, Synology Surveillance Station, Frigate,
-ONVIF Device Manager — is elke virtuele camera daardoor niet van een fysiek
-apparaat te onderscheiden.
+Turns arbitrary RTSP streams into virtual ONVIF cameras. Each virtual camera runs
+in its own container, gets its own MAC address and takes its own DHCP lease. To an
+NVR — UniFi Protect, Synology Surveillance Station, Frigate, ONVIF Device Manager
+— each one is indistinguishable from a physical device.
 
-Beheer gaat via een web-UI op poort 8080.
+Managed through a web UI on port 8080.
 
 ```
                        ┌─ onvif-cam-a1b2  MAC 02:1f:… → DHCP 192.168.1.90 ─┐
-RTSP-bronnen ──────────┼─ onvif-cam-c3d4  MAC 02:1f:… → DHCP 192.168.1.91 ─┼──→ NVR
+RTSP sources ──────────┼─ onvif-cam-c3d4  MAC 02:1f:… → DHCP 192.168.1.91 ─┼──→ NVR
                        └─ onvif-cam-e5f6  MAC 02:1f:… → DHCP 192.168.1.92 ─┘
                                         ▲
-                       controller + web-UI (poort 8080)
+                       controller + web UI (port 8080)
 ```
 
-## Wat het per camera doet
+## What it does per camera
 
-1. **DHCP** — de container hangt via macvlan aan je LAN met een vast, uit het
-   camera-ID afgeleid MAC-adres, en vraagt met `udhcpc` een lease aan. Het MAC
-   verandert niet als je de container opnieuw aanmaakt, dus een DHCP-reservering
-   blijft geldig.
-2. **RTSP-relay** — MediaMTX haalt de bronstream op zodra er een kijker is en
-   publiceert hem op het eigen IP van de virtuele camera. De NVR praat dus alleen
-   met de virtuele camera; het adres van de echte bron blijft onzichtbaar. Zonder
-   kijkers wordt de bron niet belast.
-3. **ONVIF** — een Profile-S device service op poort 80: `GetCapabilities`,
+1. **DHCP** — the container attaches to your LAN over macvlan with a fixed MAC
+   derived from what identifies the camera, and asks for a lease with `udhcpc`.
+   The MAC does not change when the container is recreated, so a DHCP reservation
+   stays valid.
+2. **RTSP relay** — MediaMTX pulls the source stream as soon as someone is
+   watching and republishes it on the virtual camera's own IP. The NVR therefore
+   only ever talks to the virtual camera; the real source's address stays hidden.
+   With no viewers, the source is left alone.
+3. **ONVIF** — a Profile S device service on port 80: `GetCapabilities`,
    `GetProfiles`, `GetStreamUri`, `GetSnapshotUri`, `GetDeviceInformation`,
-   `GetNetworkInterfaces` en een minimale events-service. Authenticatie via
-   WS-UsernameToken (digest en plaintext), HTTP Basic en HTTP Digest.
-4. **WS-Discovery** — luistert op `239.255.255.250:3702` en beantwoordt Probes,
-   zodat de camera opduikt in de "scan naar ONVIF-apparaten" van je NVR.
-5. **Snapshots** — `/snapshot` levert een JPEG, met ffmpeg uit de stream getrokken
-   en enkele seconden gecached.
-6. **Stream-detectie** — ffprobe leest bij het opstarten de echte codec, resolutie
-   en framerate van de bron, en dat is wat er via ONVIF geadverteerd wordt. Een
-   H265-bron wordt dus ook als H265 aangeboden.
-7. **Doorvoermeting** — de relay telt de bytes die binnenkomen en uitgaan; daaruit
-   volgt de werkelijke in- en uitgaande bitrate per camera.
-8. **Codec-conversie** — je kiest per camera welke codec de NVR krijgt. Wijkt de
-   bron daarvan af, dan wordt er met ffmpeg omgezet; komt hij al overeen, dan
-   gebeurt er niets. Welke hardware-encoder daarvoor beschikbaar is zoekt de
-   bridge zelf uit.
+   `GetNetworkInterfaces` and a minimal events service. Authentication over
+   WS-UsernameToken (digest and plaintext), HTTP Basic and HTTP Digest.
+4. **WS-Discovery** — listens on `239.255.255.250:3702` and answers probes, so the
+   camera turns up in your NVR's "scan for ONVIF devices".
+5. **Snapshots** — `/snapshot` serves a JPEG pulled from the stream with ffmpeg and
+   cached for a few seconds.
+6. **Stream detection** — ffprobe reads the real codec, resolution and frame rate
+   from the source at startup, and that is what ONVIF advertises. An H.265 source
+   is therefore offered as H.265.
+7. **Throughput metering** — the relay counts the bytes in and out, which gives the
+   real incoming and outgoing bitrate per camera.
+8. **Codec conversion** — you choose per camera which codec the NVR receives. If
+   the source differs, ffmpeg converts it; if it already matches, nothing happens.
+   Which hardware encoder is available is worked out by the bridge itself.
+9. **Object detection** — optional, per camera: people, vehicles and animals are
+   detected on the sub stream, inside the container, so cameras with no
+   intelligence of their own still produce events.
 
-## Vereisten
+## Requirements
 
-- **Een Linux Docker-host.** Dit is de belangrijkste randvoorwaarde: macvlan
-  heeft directe toegang tot een fysieke NIC nodig. Docker Desktop op Windows of
-  macOS draait in een VM met NAT — je virtuele camera's krijgen daar geen adres
-  van je LAN-DHCP en zijn niet zichtbaar voor je NVR. Draai dit op een NAS,
-  Proxmox-VM, Raspberry Pi of andere Linux-machine op hetzelfde netwerk.
-- Een DHCP-server op dat netwerk (je router of UniFi-console).
-- De host-NIC moet op hetzelfde L2-segment zitten als je NVR. Werk je met VLANs,
-  gebruik dan de VLAN-subinterface als parent, bijvoorbeeld `eth0.20`.
+- **A Linux Docker host.** This is the main constraint: macvlan needs direct
+  access to a physical NIC. Docker Desktop on Windows or macOS runs in a NATed VM
+  — your virtual cameras get no address from your LAN's DHCP there and are
+  invisible to your NVR. Run this on a NAS, a Proxmox VM, a Raspberry Pi or any
+  other Linux machine on the same network.
+- A DHCP server on that network (your router or UniFi console).
+- The host NIC must be on the same L2 segment as your NVR. With VLANs, use the
+  VLAN sub-interface as the parent, for example `eth0.20`.
 
 ## Unraid
 
-Unraid heeft geen `git` in de basisinstallatie, dus haal de tarball op via de
-web-terminal:
+Unraid has no `git` in the base install, so fetch the tarball from the web
+terminal:
 
 ```bash
 mkdir -p /mnt/user/appdata/rtsp-onvif-bridge
@@ -67,12 +68,11 @@ wget -qO- https://github.com/Lexvdpoel/rtsp-onvif-bridge/archive/refs/heads/main
 cp .env.example .env
 ```
 
-### Zonder compose-plugin (eenvoudigst)
+### Without the compose plugin (simplest)
 
-Unraid levert `docker compose` niet mee, maar je hebt het hier ook niet nodig:
-het compose-bestand definieert maar één service, de controller. De
-camera-containers worden door de controller zelf aangemaakt via de Docker-socket.
-Plain Docker volstaat dus:
+Unraid does not ship `docker compose`, and you do not need it here: the compose
+file defines a single service, the controller. The camera containers are created
+by the controller itself through the Docker socket. Plain Docker is enough:
 
 ```bash
 docker build -t rtsp-onvif-bridge:latest .
@@ -96,116 +96,114 @@ docker run -d \
   rtsp-onvif-bridge:latest
 ```
 
-Pas `MACVLAN_PARENT` aan als je interface anders heet.
+Change `MACVLAN_PARENT` if your interface is named differently. Paste the block in
+one go: pasted line by line, a trailing `\` becomes an escaped space.
 
-De twee `-l`-regels zorgen dat Unraid in het Docker-tabblad een camera-icoon
-toont en een **WebUI**-link in het contextmenu zet, in plaats van het standaard
-vraagteken zonder link. De camera-containers krijgen hetzelfde icoon; die hebben
-bewust geen WebUI-link, omdat Unraids `[IP]`-placeholder naar de host wijst
-terwijl een camera op zijn eigen DHCP-adres luistert.
+The two `-l` lines make Unraid show a camera icon in the Docker tab and put a
+**WebUI** entry in the context menu, instead of the default question mark with no
+link. The camera containers get the same icon; they deliberately get no WebUI
+label, because Unraid's `[IP]` placeholder resolves to the host while a camera
+answers on its own DHCP address.
 
-### Blijft het vraagteken staan?
+### Still getting the question mark?
 
-Controleer eerst of de labels er werkelijk op staan:
+First check whether the labels actually reached the container:
 
 ```bash
 docker inspect onvif-bridge-controller --format '{{json .Config.Labels}}'
 ```
 
-Staan ze er wel en zie je nog steeds het vraagteken, dan zit het in Unraids
-icoon-cache. Die is gebaseerd op de *image*-naam, niet op de container, en er is
-een bekende bug: voor een container zonder dockerMan-template wordt de cache
-nooit ongeldig verklaard, dus een placeholder die er één keer in staat blijft
-staan. Leeg hem en installeer de template:
+If they are there and you still see the placeholder, it is Unraid's icon cache.
+It is keyed on the *image* name, and there is a known bug: for a container without
+a dockerMan template the cache is never invalidated, so a placeholder that got in
+there once stays. Clear it and install the template:
 
 ```bash
-# 1. gecachte iconen voor dit image weggooien
+# 1. drop the cached icons for this image
 rm -f /boot/config/plugins/dockerMan/images/rtsp-onvif-bridge*
 rm -f /usr/local/emhttp/state/plugins/dynamix.docker.manager/images/rtsp-onvif-bridge*
 
-# 2. de template installeren, vernoemd naar je container
+# 2. install the template, named after your container
 mkdir -p /boot/config/plugins/dockerMan/templates-user
 sed 's|<Name>rtsp-onvif-bridge</Name>|<Name>onvif-bridge-controller</Name>|' /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml > /boot/config/plugins/dockerMan/templates-user/my-onvif-bridge-controller.xml
 ```
 
-Daarna het Docker-tabblad verversen met Ctrl+F5.
+Then refresh the Docker tab with Ctrl+F5.
 
-**De bestandsnaam moet overeenkomen met de containernaam.** Unraid koppelt een
-template aan een container via `my-<containernaam>.xml`; het label op de
-container alleen is niet genoeg. Draait je controller onder een andere naam, pas
-dan zowel de bestandsnaam als de `<Name>` in de template aan. Je hoeft de
-container niet via de template aan te maken — het `docker run`-commando hierboven
-blijft prima, de template levert alleen het icoon en de WebUI-link.
+**The filename has to match the container name.** Unraid ties a template to a
+container through `my-<container name>.xml`; the label on the container alone is
+not enough. If your controller runs under a different name, change both the
+filename and the `<Name>` in the template. You do not have to create the container
+from the template — the `docker run` command above is fine, the template only
+supplies the icon and the WebUI link.
 
-### Iconen voor de camera-containers
+### Icons for the camera containers
 
-Omdat Unraid per container een template wil, kan de bridge die zelf schrijven.
-Mount daarvoor de templates-map in de controller:
+Because Unraid wants a template per container, the bridge can write them itself.
+Mount the templates directory into the controller:
 
 ```bash
   -v /boot/config/plugins/dockerMan/templates-user:/unraid-templates \
 ```
 
-Elke camera die de controller aanmaakt krijgt dan een eigen template met een
-**rood** camera-icoon, zodat je ze in het Docker-tabblad meteen onderscheidt van
-de blauwe controller. Verwijder je een camera, dan gaat de template mee.
+Every camera the controller creates then gets its own template with a **red**
+camera icon, so you can tell them apart from the blue controller at a glance.
+Delete a camera and its template goes with it.
 
-Die templates bestaan alleen voor het icoon. Bewerk ze niet via **Edit** in
-Unraid: een camera heeft een macvlan-interface en een vast MAC-adres nodig die
-het formulier van Unraid niet kan uitdrukken, en Apply zou de container zonder
-die instellingen opnieuw aanmaken. Beheer de camera's via de web-UI op poort
-8080. Laat je de mount weg, dan werkt alles verder gewoon; de camera's houden
-dan het standaard vraagteken.
+Those templates exist only for the icon. Do not edit them through **Edit** in
+Unraid: a camera needs a macvlan interface and a fixed MAC address that Unraid's
+form cannot express, and Apply would recreate the container without them. Manage
+the cameras from the web UI on port 8080. Leave the mount out and everything still
+works; the cameras just keep the default placeholder.
 
-### Met de Unraid-template
+### With the Unraid template
 
-Wil je de container via **Add Container** beheren in plaats van via de
-commandoregel, installeer dan de meegeleverde template. Poort 8080, de paden,
-het icoon en de WebUI-link staan er al in:
+If you would rather manage the container through **Add Container** than from the
+command line, install the bundled template. Port 8080, the paths, the icon and the
+WebUI link are already filled in:
 
 ```bash
 mkdir -p /boot/config/plugins/dockerMan/templates-user
 cp /mnt/user/appdata/rtsp-onvif-bridge/unraid/rtsp-onvif-bridge.xml /boot/config/plugins/dockerMan/templates-user/my-rtsp-onvif-bridge.xml
 ```
 
-Daarna in Unraid: **Docker → Add Container → Template → rtsp-onvif-bridge**.
-Controleer `MACVLAN_PARENT` en klik Apply.
+Then in Unraid: **Docker → Add Container → Template → rtsp-onvif-bridge**. Check
+`MACVLAN_PARENT` and click Apply.
 
-De template verwijst naar het lokaal gebouwde image `rtsp-onvif-bridge:latest`,
-dus `docker build` moet eerst gedraaid hebben. Unraid probeert bij Apply het
-image te pullen; staat het al lokaal, dan is die pull-melding niet erg. Loopt het
-daar vast, gebruik dan de `docker run`-route hierboven — die doet precies
-hetzelfde.
+The template references the locally built image `rtsp-onvif-bridge:latest`, so
+`docker build` has to have run first. Unraid tries to pull the image on Apply; if
+it is already local, that pull message is harmless. If it refuses outright, use
+the `docker run` route above — it does exactly the same thing.
 
-### Met compose-plugin
+### With the compose plugin
 
-Wil je toch compose, installeer dan **Compose Manager Plus** van *mstrhakr* uit
-Community Applications. Dat is de voortzetting van de inmiddels verouderde
-*Docker Compose Manager* van dcflachs en installeert de `docker compose`-CLI.
+If you do want compose, install **Compose Manager Plus** by *mstrhakr* from
+Community Applications. That is the continuation of the now-deprecated *Docker
+Compose Manager* by dcflachs, and it installs the `docker compose` CLI.
 
-Let op: **Docker-Compose-Maker** van *grtgbln* is iets anders — dat is een web-app
-om compose-bestanden mee samen te stellen, geen plugin die `docker compose`
-installeert. Die heb je hier niet aan.
+Note that **Docker-Compose-Maker** by *grtgbln* is something else — a web app for
+assembling compose files, not a plugin that installs `docker compose`. It is no
+use here.
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-Twee Unraid-specifieke punten:
+Two Unraid-specific points:
 
-- **`MACVLAN_PARENT`** is op Unraid meestal `br0` (of `eth0` als bridging uit
-  staat, of `br0.20` voor een VLAN). Controleer met `ip -br link`.
-- **Macvlan en kernel call traces.** Unraid heeft een bekende instabiliteit met
-  macvlan; de standaardaanbeveling is om Docker-netwerken op ipvlan te zetten.
-  Dat kan hier niet: bij ipvlan delen alle containers het MAC-adres van de host,
-  en dan krijgt elke virtuele camera geen eigen DHCP-lease meer — precies wat dit
-  project moet doen. Macvlan is dus vereist. De crashes hangen samen met bridging
-  op dezelfde interface; de gebruikelijke oplossing is de camera's op een
-  interface te zetten waarop geen bridge actief is, bijvoorbeeld een aparte NIC of
-  een VLAN-subinterface. Houd dit in de gaten bij de eerste dagen draaien.
+- **`MACVLAN_PARENT`** is usually `br0` on Unraid (or `eth0` with bridging off, or
+  `br0.20` for a VLAN). Check with `ip -br link`.
+- **Macvlan and kernel call traces.** Unraid has a known instability with macvlan;
+  the standard advice is to switch Docker networks to ipvlan. That is not possible
+  here: with ipvlan every container shares the host's MAC address, so no virtual
+  camera gets its own DHCP lease — exactly what this project exists to do. Macvlan
+  is therefore required. The crashes are tied to bridging on the same interface;
+  the usual fix is to put the cameras on an interface with no active bridge, such
+  as a separate NIC or a VLAN sub-interface. Keep an eye on it for the first few
+  days.
 
-## Installatie
+## Installation
 
 ```bash
 git clone https://github.com/Lexvdpoel/rtsp-onvif-bridge.git
@@ -213,326 +211,319 @@ cd rtsp-onvif-bridge
 cp .env.example .env
 ```
 
-Zoek de juiste parent-interface op:
+Find the right parent interface:
 
 ```bash
-ip -br link            # bijv. eth0, enp3s0, ens18, of eth0.20 voor VLAN 20
+ip -br link            # e.g. eth0, enp3s0, ens18, or eth0.20 for VLAN 20
 ```
 
-Zet die in `.env` bij `MACVLAN_PARENT`. Daarna:
+Put it in `.env` under `MACVLAN_PARENT`. Then:
 
 ```bash
 docker compose build
 docker compose up -d
 ```
 
-Open `http://<docker-host>:8080`. De macvlan-netwerk `camlan` wordt bij de eerste
-start automatisch aangemaakt.
+Open `http://<docker-host>:8080`. The macvlan network `camlan` is created
+automatically on first start.
 
-### Eerste keer: account aanmaken
+### First run: create an account
 
-De eerste keer dat je de UI opent vraagt hij om een gebruikersnaam en wachtwoord.
-Die beveiligen deze beheerinterface — niet de camera's zelf, die hebben hun eigen
-ONVIF-credentials. Het wachtwoord wordt met scrypt gehasht opgeslagen in
-`data/auth.json`; de sessie is een ondertekende cookie, dus een herstart van de
-container logt je niet uit.
+The first time you open the UI it asks for a username and password. These protect
+this management interface — not the cameras themselves, which have their own ONVIF
+credentials. The password is stored scrypt-hashed in `data/auth.json`; the session
+is a signed cookie, so restarting the container does not sign you out.
 
-Wachtwoord wijzigen of uitloggen kan via **Account** rechtsboven. Een
-wachtwoordwijziging verloopt alle bestaande sessies.
+Change the password or sign out under **Account**, top right. Changing the
+password invalidates every existing session.
 
-Wachtwoord kwijt? Verwijder `data/auth.json` en herstart de controller; de UI
-vraagt dan opnieuw om een account. De camera's blijven ongemoeid.
+Lost the password? Delete `data/auth.json` and restart the controller; the UI asks
+for an account again. The cameras are untouched.
 
-### Camera toevoegen
+### Adding a camera
 
-**Add camera** → naam, RTSP-URL van de bron, en de gebruikersnaam/wachtwoord
-waarmee de NVR straks bij de *virtuele* camera inlogt (dat hoeft niet hetzelfde te
-zijn als het wachtwoord van de echte camera — die credentials horen in de RTSP-URL
-zelf, bijvoorbeeld `rtsp://admin:geheim@192.168.1.50:554/stream1`).
+**Add camera** → a name, the source RTSP URL, and the username and password the
+NVR will use to log in to the *virtual* camera. That does not have to match the
+real camera's password — those credentials belong in the RTSP URL itself, for
+example `rtsp://admin:secret@192.168.1.50:554/stream1`.
 
-Optioneel een substream-URL: dat levert een tweede ONVIF-profiel op, waarmee een
-NVR een lage resolutie kan kiezen voor previews.
+A sub stream URL is optional: it adds a second ONVIF profile, which lets an NVR
+pick a low-resolution stream for previews. It is also what object detection runs
+on, so it is worth filling in.
 
-De breedte/hoogte/framerate/bitrate zijn **alleen metadata**. Er wordt niets
-gehercodeerd; ze vertellen de NVR wat hij kan verwachten. Standaard staat
-**Detect from the source stream** aan: de camera leest die waarden bij het
-opstarten met ffprobe uit de bron en adverteert wat er echt is. De ingevulde
-waarden gelden dan alleen tot de probe klaar is, of als die mislukt. Zet de
-detectie uit als je bewust iets anders wilt adverteren.
+Width, height, frame rate and bitrate are **metadata only**. Nothing is
+re-encoded because of them; they tell the NVR what to expect. **Detect from the
+source stream** is on by default: the camera reads those values from the source
+with ffprobe at startup and advertises what is really there. The values you type
+then only apply until the probe finishes, or if it fails. Turn detection off if
+you deliberately want to advertise something else.
 
-Zodra de camera draait toont de kaart het MAC-adres, het via DHCP gekregen IP, het
-ONVIF-endpoint en de RTSP-URL. Klik op een waarde om die te kopiëren.
+Once the camera is running, the card shows its MAC address, the IP it got over
+DHCP, the ONVIF endpoint and the RTSP URL. Click a value to copy it.
 
-### Vaste IP's
+### Fixed IP addresses
 
-Geef in je DHCP-server een reservering op het getoonde MAC-adres. Dat MAC ligt
-vast zolang de camera bestaat, ook na een rebuild of een herstart van de host.
+Add a reservation in your DHCP server for the MAC address shown. That MAC is
+fixed for as long as the camera exists, across rebuilds and host restarts.
 
-Het virtuele MAC wordt afgeleid van wat de camera *identificeert*, niet van een
-willekeurig nummer. Verwijder je een camera en voeg je hem later opnieuw toe, dan
-krijgt hij hetzelfde adres terug en blijft je reservering kloppen.
+The virtual MAC is derived from what *identifies* the camera, not from a random
+number. Delete a camera and add it back later and it returns to the same address,
+so your reservation still fits.
 
-| Wat je invult | Waar het MAC van afhangt |
+| What you fill in | What the MAC depends on |
 |---|---|
-| **MAC van de echte camera** (aanbevolen) | Alleen dat MAC. De bron mag van IP veranderen, van wachtwoord, van pad — het virtuele MAC blijft. |
-| Niets | Host en pad uit de bron-URL. Een wachtwoordwijziging verandert niets; een ander IP wel. |
+| Nothing (the normal case) | The host and path from the source URL. Credentials are stripped, so rotating a password changes nothing. A different IP does change it. |
+| **The real camera's MAC** | Only that MAC. The source may change IP, password or path and the virtual MAC stays put. |
 
-Vul het echte MAC in op het moment dat je de camera toevoegt. Het virtuele MAC
-wordt bij het aanmaken vastgelegd en daarna niet meer herberekend, juist om te
-voorkomen dat een bewerking stilletjes je reservering breekt.
+You do not have to fill anything in. The optional MAC field is there for the case
+where a camera moves to a different IP permanently. Fill it in when you add the
+camera: the virtual MAC is fixed on creation and is never recalculated afterwards,
+precisely so that editing a URL cannot silently invalidate a reservation.
 
-Wijzen twee camera's naar dezelfde bron, dan krijgt de tweede automatisch een
-afwijkend MAC: twee kaarten met hetzelfde adres op één LAN werken allebei niet.
+If two cameras point at the same source, the second automatically gets a different
+MAC: two NICs sharing an address on one LAN break both of them.
 
-## UniFi Protect
+## Mode per camera: ONVIF or UniFi Protect
 
-1. Zorg dat de Docker-host en de UniFi-console op hetzelfde netwerk zitten.
-2. In Protect: **Devices → Add Devices → Third-party camera / ONVIF**. De
-   virtuele camera's verschijnen in de scan; anders voeg je het getoonde IP
-   handmatig toe.
-3. Vul de gebruikersnaam en het wachtwoord in die je in de web-UI hebt ingesteld.
+Each camera decides how it presents itself.
 
-Lukt adoptie niet, zet dan tijdelijk **Require authentication** uit en probeer
-opnieuw — zo zie je meteen of het probleem in de credentials zit of ergens anders.
-Zet het daarna weer aan.
-
-## Modus per camera: ONVIF of UniFi Protect
-
-Elke camera kiest zelf hoe hij zich aanbiedt.
-
-| Modus | Wat het doet |
+| Mode | What it does |
 |---|---|
-| **ONVIF** (standaard) | De ingebouwde ONVIF-device van deze bridge. Werkt met elke NVR. UniFi Protect neemt hem aan in de beperkte "generic"-modus: opnemen werkt, AI-detecties niet. |
-| **UniFi Protect** | Draait `unifi-cam-proxy`, dat het eigen protocol van Protect spreekt. De camera wordt geadopteerd als een echt UniFi-apparaat. |
+| **ONVIF** (default) | The built-in ONVIF device this bridge serves. Works with any NVR. UniFi Protect accepts it in its reduced "generic" mode: recording works, AI detections do not. |
+| **UniFi Protect** | Runs `unifi-cam-proxy`, which speaks Protect's own protocol. The camera is adopted like a real UniFi device. |
 
-In UniFi-modus wordt de ONVIF-service niet gestart — Protect gebruikt hem toch
-niet. De RTSP-relay blijft wel draaien, dus je codec-conversie en
-hardware-encoding werken gewoon door: de proxy leest uit de lokale relay.
+In UniFi mode the ONVIF service is not started — Protect does not use it anyway.
+The RTSP relay does keep running, so your codec conversion and hardware encoding
+still apply: the proxy reads from the local relay.
 
-### Een camera adopteren in Protect
+### Adopting a camera into Protect
 
-1. Zet de modus op **UniFi Protect** en vul het adres van je console in.
-2. Haal in Protect een token op onder **Devices → Add Devices → Third-party
-   camera**. Dat is 60 minuten geldig.
-3. Plak het token in het formulier en sla op.
+1. Set the mode to **UniFi Protect** and fill in your console's address.
+2. Get a token in Protect under **Devices → Add Devices → Third-party camera**.
+   It is valid for 60 minutes.
+3. Paste the token into the form and save.
 
-Het token is alleen de eerste keer nodig. Daarna herkent Protect de camera aan
-een clientcertificaat, dat de bridge zelf genereert — je hoeft dus geen echte
-UniFi-camera leeg te trekken voor een sleutel. Dat certificaat staat bij de
-status van de camera in `state/certs/`, zodat het een herstart overleeft.
-Verwijder je de camera, dan is het weg en moet je opnieuw adopteren.
+The token is only needed the first time. After that Protect recognises the camera
+by a client certificate, which the bridge generates itself — you do not have to
+extract a key from a real UniFi camera. The certificate is kept with the camera's
+state in `state/certs/` so it survives a restart. Delete the camera and it is
+gone, and you have to adopt again.
 
-Ken je de proxy en mis je een optie, dan kun je in **Extra proxy arguments**
-losse argumenten meegeven; die worden ongewijzigd doorgegeven.
+If you know the proxy and miss an option, **Extra proxy arguments** passes
+arguments through unchanged.
 
-### Objectherkenning
+### Object detection
 
-Camera's zonder eigen intelligentie sturen alleen beeld, dus de herkenning
-gebeurt hier. Zet **Detect objects** aan bij een camera en de container kijkt mee
-op de **substream** — een paar beelden per seconde op lage resolutie is genoeg om
-te zien dát er iemand staat, en het houdt de kosten laag genoeg om meerdere
-camera's tegelijk op een CPU te draaien. Is er geen substream, dan valt hij terug
-op de hoofdstream.
+Cameras with no intelligence of their own send pixels and nothing else, so the
+detection happens here. Switch **Detect objects** on for a camera and the
+container watches the **sub stream** — a few frames a second at low resolution is
+enough to tell that someone is there, and it keeps the cost low enough to run
+several cameras at once on a CPU. With no sub stream it falls back to the main one.
 
-Het model is SSD MobileNet v1 uit de ONNX model zoo, getraind op COCO, en zit in
-het image gebakken — de camera's halen bij het starten dus niets op.
+The model is SSD MobileNet v1 from the ONNX Model Zoo, trained on COCO, baked into
+the image — the cameras fetch nothing at startup.
 
-| Instelling | Wat het doet |
+| Setting | What it does |
 |---|---|
-| **What to look for** | `person`, `vehicle`, `animal`, of een selectie daarvan |
-| **Frames per second** | hoe vaak er gekeken wordt; hoger is sneller én duurder |
-| **Confidence threshold** | hoe zeker het model moet zijn |
-| **Frames before reporting** | hoe vaak iets achter elkaar gezien moet worden |
-| **Quiet period** | hoelang datzelfde type daarna zwijgt |
+| **What to look for** | `person`, `vehicle`, `animal`, or a subset |
+| **Frames per second** | how often it looks; higher reacts faster and costs more |
+| **Confidence threshold** | how sure the model has to be |
+| **Frames before reporting** | how many consecutive frames an object must appear in |
+| **Quiet period** | how long that type stays silent afterwards |
 
-Die laatste twee doen het meeste werk. Een klein model produceert af en toe een
-losse valse treffer; door te eisen dat iets in meerdere opeenvolgende beelden
-zichtbaar is verdwijnen die. De rustperiode zorgt dat één voorbijganger één
-melding oplevert in plaats van één per beeld.
+The last two do most of the work. A small model throws out the occasional
+single-frame false positive; requiring several consecutive frames removes them.
+The quiet period means one person walking past is one event rather than one per
+frame.
 
-In **UniFi-modus** worden de detecties als smart detection aan Protect gemeld. In
-ONVIF-modus kan Protect ze niet ontvangen; ze staan dan alleen op de camerakaart
-in deze UI.
+In **UniFi mode** detections are reported to Protect as smart detections. In ONVIF
+mode Protect has no way to receive them, so they only appear on the camera card in
+this UI.
 
-**Pakketjes kunnen niet.** COCO heeft geen klasse voor een pakket. Ik had er
-"koffer" op kunnen mappen, maar dat is een gok die zich voordoet als een
-detectie. Wil je pakketherkenning, dan is daar een model voor nodig dat er
-specifiek op getraind is.
+**Packages are not supported.** COCO has no class for a parcel. Mapping "suitcase"
+onto it was an option, but that is a guess dressed up as a detection. Package
+detection needs a model trained specifically for it.
 
-Ook eerlijk over **dier**: `unifi-cam-proxy` kent officieel alleen persoon en
-voertuig. Dier wordt met dezelfde waarde doorgegeven die Protect intern
-gebruikt, maar dat heb ik niet tegen een echte console kunnen verifiëren. Werkt
-het niet, dan gaan alleen dier-meldingen verloren.
+Being equally plain about **animal**: `unifi-cam-proxy` officially knows only
+person and vehicle. Animal is passed through with the value Protect uses
+internally, which has not been verified against a real console. If it is rejected,
+only animal events are lost.
 
-### Wat dit niet doet
+### What this does not do
 
-Er is geen tweerichtingsaudio en geen PTZ. De detectie draait op de substream
-en kent geen zones: hij meldt wát hij ziet, niet wáár in beeld.
+There is no two-way audio and no PTZ. Detection runs on the sub stream and has no
+zones: it reports *what* it sees, not *where* in the frame.
 
-## Uitgaande codec kiezen
+## Choosing the outgoing codec
 
-Per camera stel je in wat de NVR moet krijgen:
+Per camera you set what the NVR receives:
 
-| Instelling | Wat er gebeurt |
+| Setting | What happens |
 |---|---|
-| **Copy** (standaard) | De stream gaat ongewijzigd door. Geen CPU-kosten. |
-| **H.264** | Is de bron al H.264, dan verandert er niets. Is hij H.265 of MJPEG, dan wordt hij omgezet. |
-| **H.265 / HEVC** | Andersom hetzelfde. |
+| **Copy** (default) | The stream passes through unchanged. No CPU cost. |
+| **H.264** | If the source is already H.264, nothing changes. If it is H.265 or MJPEG, it is converted. |
+| **H.265 / HEVC** | The same the other way round. |
 
-De conversie gebeurt alleen als het nodig is, en alleen zolang er iemand kijkt:
-ffmpeg wordt door de relay op aanvraag gestart en stopt weer als de laatste kijker
-weg is. Wat er via ONVIF geadverteerd wordt volgt de uitgaande codec, niet de
-inkomende — een naar H.265 omgezette stream wordt dus ook als H.265 aangeboden.
+Conversion only happens when it is needed, and only while someone is watching:
+ffmpeg is started on demand by the relay and stops again when the last viewer
+leaves. What ONVIF advertises follows the outgoing codec, not the incoming one, so
+a stream converted to H.265 is offered as H.265.
 
-Kan de bron niet gelezen worden bij het opstarten, dan wordt er omgezet in plaats
-van gegokt: je hebt expliciet om een codec gevraagd, en die krijgen weegt zwaarder
-dan de CPU die misschien niet nodig was.
+If the source cannot be read at startup, it is converted rather than guessed: you
+asked for a specific codec, and delivering it weighs more than the CPU that might
+not have been needed.
 
-### Hardware-encoding wordt zelf gevonden
+### Hardware encoding is detected for you
 
-De encoder staat standaard op **Automatic**. Bij de eerste start kijkt de bridge
-zelf wat deze host kan en kiest dat; je hoeft niets in te vullen.
+The encoder defaults to **Automatic**. On first start the bridge works out what
+this host can do and picks accordingly; you do not have to fill anything in.
 
-Die detectie raadt niet. Dat een encoder in ffmpeg zit, betekent nog niet dat deze
-machine hem kan draaien — een oudere Intel-iGPU noemt `hevc_vaapi` wel, maar kan
-H.265 alleen decoden. Daarom wordt elke kandidaat beslist met een échte
-test-encode van vijf frames, in een wegwerp-container met hetzelfde ffmpeg en het
-juiste device eraan. Komt die schoon terug, dan werkt hij.
+That detection does not guess. An encoder being present in ffmpeg says nothing
+about whether this machine can run it — an older Intel iGPU lists `hevc_vaapi` but
+can only decode H.265. So every candidate is settled by a real test encode of five
+frames, in a throwaway container with the same ffmpeg and the right device
+attached. If that returns cleanly, it works.
 
-Het resultaat staat in de badge **GPU:** bovenin. Klik erop om opnieuw te
-detecteren, bijvoorbeeld nadat je een GPU hebt toegevoegd. Beweeg erover voor
-waarom iets niet beschikbaar is.
+The result is in the **GPU:** badge at the top. Click it to detect again, for
+instance after adding a GPU. Hover it for the reason something is unavailable.
 
-De keuze wordt per codec gemaakt: kan je iGPU wel H.264 maar geen H.265 encoden,
-dan gebruikt een H.264-camera de iGPU en valt een H.265-camera terug op software.
+The choice is made per codec: if your iGPU can encode H.264 but not H.265, an
+H.264 camera uses the iGPU and an H.265 camera falls back to software.
 
-| Encoder | Nodig op de host | Voorkeur |
+| Encoder | Needed on the host | Preference |
 |---|---|---|
-| **VA-API** | Intel- of AMD-iGPU met `/dev/dri` | eerst — breedst inzetbaar, geen limiet op het aantal gelijktijdige streams |
-| **Quick Sync** | Idem, Intel-specifiek pad | tweede |
-| **NVENC** | NVIDIA-GPU plus de NVIDIA container runtime | laatst — consumentenkaarten beperken het aantal gelijktijdige encode-sessies, wat gaat knellen zodra meerdere camera's tegelijk omzetten |
+| **VA-API** | Intel or AMD iGPU with `/dev/dri` | first — broadest, and no limit on concurrent streams |
+| **Quick Sync** | the same hardware, Intel-specific path | second |
+| **NVENC** | NVIDIA GPU plus the NVIDIA container runtime | last — consumer cards cap concurrent encode sessions, which starts to bite once several cameras convert at once |
 
-Wil je het zelf bepalen, kies dan een encoder uit de lijst; die keuze wordt niet
-overruled. Het device wordt alleen aan de camera-container meegegeven als er
-werkelijk mee geëncodeerd wordt — in Copy-modus gebeurt dat niet.
+To decide for yourself, pick an encoder from the list; that choice is not
+overridden. The device is only passed into the camera container when something is
+actually encoded with it — in Copy mode it is not.
 
-Blijft het beeld zwart na het omzetten, zet dan **Audio** op *Drop*. Niet elke
-camera-audio laat zich in RTSP hermuxen, en dan faalt het hele commando.
+If the picture stays black after switching codec, set **Audio** to *Drop*. Not
+every camera's audio can be remuxed into RTSP, and then the whole command fails.
 
-## Doorvoer aflezen
+## Reading throughput
 
-Elke camerakaart toont de gemeten in- en uitgaande bitrate met een grafiekje van
-de laatste vijf minuten; bovenaan staan de totalen over alle camera's. Beweeg met
-de muis over een grafiekje voor de waarde op dat moment.
+Each camera card shows the measured incoming and outgoing bitrate with a graph of
+the last five minutes; the totals across all cameras are at the top. Hover a graph
+for the value at that point.
 
-De getallen komen uit de byte-tellers van de relay, niet uit een schatting:
-**in** is wat er van de bron binnenkomt, **uit** is wat er naar de NVR's gaat. Met
-twee kijkers op dezelfde camera is uitgaand dus ongeveer het dubbele van inkomend.
-Staat de relay uit, dan loopt het verkeer niet door de container en valt er niets
-te meten.
+The numbers come from the relay's byte counters, not from an estimate: **in** is
+what arrives from the source, **out** is what goes to the NVRs. With two viewers on
+one camera, outgoing is roughly double incoming. With the relay off, the traffic
+does not pass through the container and there is nothing to measure.
 
-Wordt er omgezet, dan meet **in** de stream zoals die uit ffmpeg komt, niet wat de
-bron verstuurt — de relay krijgt immers het geëncodeerde resultaat binnen. De UI
-zegt dat er ook bij.
+When a stream is being converted, **in** measures what comes out of ffmpeg rather
+than what the source sends — the relay receives the encoded result. The UI says so.
 
-**CBR of VBR** wordt afgeleid, niet uitgelezen: RTSP vertelt niet welke
-rate-control de bron gebruikt. De bridge kijkt hoe sterk de gemeten bitrate
-varieert over de laatste twee minuten; blijft die binnen 8% van het gemiddelde,
-dan is het CBR. Het percentage staat erbij, zodat je zelf kunt zien hoe uitgesproken
-het geval is.
+**CBR or VBR** is inferred, not read: RTSP does not report which rate control the
+source uses. The bridge looks at how much the measured bitrate varies over the last
+two minutes; within 8% of the mean it calls it CBR. The percentage is shown so you
+can judge how clear-cut the case is.
 
-## Backup en restore
+## Backup and restore
 
-**Backup** downloadt alle camera's als één JSON-bestand. **Restore** leest dat
-bestand terug en biedt twee keuzes: alles vervangen, of de camera's uit de backup
-toevoegen aan wat er al staat.
+**Backup** downloads every camera as one JSON file. **Restore** reads it back and
+offers two choices: replace everything, or add the cameras from the backup to what
+is already there.
 
-Een restore behoudt de camera-ID's, en dus de MAC-adressen. Je DHCP-reserveringen
-blijven daarmee geldig, ook als je de bridge op een andere host opnieuw opbouwt.
+A restore preserves the camera ids, and therefore the MAC addresses, so your DHCP
+reservations remain valid even if you rebuild the bridge on another host.
 
-Let op: het backupbestand bevat de ONVIF-wachtwoorden in platte tekst — anders zou
-een restore geen werkende camera's opleveren. Bewaar het navenant.
+Note that the backup file contains the ONVIF passwords in plain text — otherwise a
+restore would not produce working cameras. Store it accordingly.
 
-## De macvlan-valkuil
+## The macvlan catch
 
-Een macvlan-container en zijn eigen Docker-host kunnen elkaar niet bereiken. Dat
-is een kernel-eigenschap, geen bug. Voor deze opstelling maakt het meestal niets
-uit: de NVR is een ander apparaat. Draait je NVR (bijvoorbeeld Frigate) wél op
-dezelfde host, maak dan een macvlan-shim:
+A macvlan container and its own Docker host cannot reach each other. That is a
+kernel property, not a bug. For this setup it usually does not matter: the NVR is
+a different machine. If your NVR (Frigate, say) runs on the same host, add a
+macvlan shim:
 
 ```bash
 ip link add shim link eth0 type macvlan mode bridge
 ip addr add 192.168.1.250/32 dev shim
 ip link set shim up
-ip route add 192.168.1.90/32 dev shim      # per camera-IP
+ip route add 192.168.1.90/32 dev shim      # one per camera IP
 ```
 
-Dit overleeft een reboot niet; zet het in een systemd-unit of in `/etc/network/interfaces`.
+This does not survive a reboot; put it in a systemd unit or in
+`/etc/network/interfaces`.
 
-## Problemen oplossen
+## Troubleshooting
 
-Klik **Logs** op een camerakaart — de meeste antwoorden staan daar.
+Click **Logs** on a camera card — most answers are there.
 
-| Symptoom | Oorzaak |
+| Symptom | Cause |
 |---|---|
-| `waiting-for-dhcp`, daarna `No DHCP lease` | Verkeerde `MACVLAN_PARENT`, of de parent hangt aan een VLAN zonder DHCP-server. Controleer met `ip -br link` en kijk of de lease-aanvraag bij je DHCP-server binnenkomt. |
-| Camera is niet zichtbaar in de scan van de NVR | WS-Discovery is multicast en komt niet over VLAN-grenzen of door een router. Voeg het IP handmatig toe. |
-| Adoptie faalt met een auth-fout | Test met **Require authentication** uit. Sommige NVR's sturen alleen HTTP Basic, andere alleen WS-UsernameToken — beide worden ondersteund, maar een typefout in het wachtwoord is de gebruikelijke oorzaak. |
-| Beeld blijft zwart, ONVIF werkt wel | De relay krijgt de bron niet binnen. Test de bron-URL rechtstreeks: `ffplay -rtsp_transport tcp "rtsp://…"`. Probeer transport UDP als TCP hapert. |
-| Snapshot geeft 503 | ffmpeg kreeg geen frame binnen 15 seconden — meestal dezelfde oorzaak als hierboven. |
-| Beeld zwart na het kiezen van een codec | De audio van de bron laat zich niet in RTSP hermuxen. Zet **Audio** op *Drop* en herstart de camera. |
-| CPU loopt vol na het kiezen van een codec | Software-encoding. Kies een hardware-encoder, of zet de codec terug op Copy als de NVR de bron-codec toch aankan. |
-| Badge zegt `GPU: software only` | Er is geen werkende hardware-encoder gevonden. Beweeg over de badge voor de reden per encoder. Meestal ontbreekt `/dev/dri` op de host, of kan de iGPU de gevraagde codec niet encoden. |
-| `Cannot load libva` of de encoder start niet | Je hebt handmatig een encoder gekozen die het niet doet. Zet hem op **Automatic**, of klik de GPU-badge aan om opnieuw te detecteren. |
-| Bitrate blijft op nul staan | De relay staat uit voor die camera, of hij is nog niet gestart. Zonder relay loopt het verkeer niet door de container en valt er niets te meten. |
-| Detectie blijft op `probing…` | ffprobe komt niet bij de bron. Kijk in de logs naar de regel die met `[probe]` begint; meestal klopt de RTSP-URL of het transport niet. |
-| Wachtwoord van de UI kwijt | Verwijder `data/auth.json` en herstart de controller; hij vraagt dan opnieuw om een account. |
-| `ipv4 pool is empty` bij het aanmaken van het netwerk | Het macvlan-netwerk werd zonder IPv4-pool aangemaakt. Zorg dat `MACVLAN_SUBNET` gevuld is (default `100.127.255.0/24`). De oude instelling `MACVLAN_IPAM=null` werkt niet: Docker's macvlan-driver eist een pool. |
-| `Image not found` bij toevoegen | `docker compose build` nog niet gedraaid, of `BRIDGE_IMAGE` wijkt af van de gebouwde tag. |
+| `waiting-for-dhcp`, then `No DHCP lease` | Wrong `MACVLAN_PARENT`, or the parent sits on a VLAN with no DHCP server. Check with `ip -br link` and see whether the request reaches your DHCP server. |
+| The camera does not show up in the NVR's scan | WS-Discovery is multicast and does not cross VLAN boundaries or routers. Add the IP by hand. |
+| Adoption fails with an auth error | Test with **Require authentication** off. Some NVRs send only HTTP Basic, others only WS-UsernameToken — both are supported, but a typo in the password is the usual cause. |
+| Picture stays black, ONVIF works | The relay cannot reach the source. Test the source URL directly: `ffplay -rtsp_transport tcp "rtsp://…"`. Try UDP transport if TCP stalls. |
+| Snapshot returns 503 | ffmpeg got no frame within 15 seconds — usually the same cause as above. |
+| Picture black after choosing a codec | The source's audio cannot be remuxed into RTSP. Set **Audio** to *Drop* and restart the camera. |
+| CPU saturated after choosing a codec | Software encoding. Pick a hardware encoder, or set the codec back to Copy if the NVR can handle the source codec anyway. |
+| Badge says `GPU: software only` | No working hardware encoder was found. Hover the badge for the reason per encoder. Usually `/dev/dri` is missing on the host, or the iGPU cannot encode the codec asked for. |
+| `Cannot load libva`, or the encoder will not start | You picked an encoder by hand that does not work. Set it to **Automatic**, or click the GPU badge to detect again. |
+| Bitrate stays at zero | The relay is off for that camera, or it has not started. Without the relay the traffic does not pass through the container. |
+| Stream detection stuck on `probing…` | ffprobe cannot reach the source. Look for the `[probe]` line in the logs; usually the RTSP URL or the transport is wrong. |
+| Lost the UI password | Delete `data/auth.json` and restart the controller; it asks for an account again. |
+| `ipv4 pool is empty` when creating the network | The macvlan network was created without an IPv4 pool. Make sure `MACVLAN_SUBNET` is set (default `100.127.255.0/24`). The old `MACVLAN_IPAM=null` setting does not work: Docker's macvlan driver requires a pool. |
+| `Image not found` when adding a camera | `docker compose build` has not run, or `BRIDGE_IMAGE` differs from the tag you built. |
 
-Uitgebreide ONVIF-logging: zet `ONVIF_DEBUG=1` in de environment van de
-camera-container (of in `docker-compose.yml`, waarna je de camera's herstart).
+For verbose ONVIF logging, set `ONVIF_DEBUG=1` in the camera container's
+environment (or in `docker-compose.yml`, then restart the cameras).
 
-## Opbouw
+## Layout
 
-| Pad | Rol |
+| Path | Role |
 |---|---|
-| [app/controller/main.py](app/controller/main.py) | REST-API en web-UI |
-| [app/controller/docker_mgr.py](app/controller/docker_mgr.py) | maakt het macvlan-netwerk en de camera-containers |
-| [app/controller/store.py](app/controller/store.py) | configuratie in `data/cameras.json` |
-| [app/camera/run.py](app/camera/run.py) | opstartvolgorde van één virtuele camera |
-| [app/camera/net.py](app/camera/net.py) | DHCP op de macvlan-interface |
-| [app/camera/onvif_server.py](app/camera/onvif_server.py) | ONVIF device-, media- en events-service |
+| [app/controller/main.py](app/controller/main.py) | REST API and web UI |
+| [app/controller/docker_mgr.py](app/controller/docker_mgr.py) | creates the macvlan network and the camera containers |
+| [app/controller/store.py](app/controller/store.py) | configuration in `data/cameras.json` |
+| [app/controller/auth.py](app/controller/auth.py) | login, password hashing, session cookies |
+| [app/controller/backup.py](app/controller/backup.py) | export and validation of a backup |
+| [app/controller/hwdetect.py](app/controller/hwdetect.py) | runs the hardware probe, caches and chooses |
+| [app/camera/run.py](app/camera/run.py) | boot order of a single virtual camera |
+| [app/camera/net.py](app/camera/net.py) | DHCP on the macvlan interface |
+| [app/camera/onvif_server.py](app/camera/onvif_server.py) | ONVIF device, media and events services |
 | [app/camera/wsdiscovery.py](app/camera/wsdiscovery.py) | WS-Discovery responder |
-| [app/camera/mediamtx.py](app/camera/mediamtx.py) | RTSP-relay |
-| [app/camera/snapshot.py](app/camera/snapshot.py) | JPEG-snapshots via ffmpeg |
-| [app/controller/auth.py](app/controller/auth.py) | login, wachtwoordhashing, sessiecookies |
-| [app/controller/backup.py](app/controller/backup.py) | export en validatie van een backup |
-| [app/camera/probe.py](app/camera/probe.py) | ffprobe-detectie van de bronstream |
-| [app/camera/stats.py](app/camera/stats.py) | doorvoermeting en CBR/VBR-afleiding |
-| [app/camera/transcode.py](app/camera/transcode.py) | codec-beslissing en ffmpeg-commando |
-| [app/camera/hwprobe.py](app/camera/hwprobe.py) | test-encode per hardware-encoder |
-| [app/camera/unifi.py](app/camera/unifi.py) | certificaat en aanroep voor unifi-cam-proxy |
-| [app/camera/unifi_runner.py](app/camera/unifi_runner.py) | proxy-camera die detecties doorgeeft |
-| [app/camera/detect.py](app/camera/detect.py) | objectherkenning op de substream |
-| [app/controller/hwdetect.py](app/controller/hwdetect.py) | draait de probe, cachet en kiest |
-| [app/common/models.py](app/common/models.py) | cameramodel, MAC-generatie, validatie |
+| [app/camera/mediamtx.py](app/camera/mediamtx.py) | RTSP relay |
+| [app/camera/snapshot.py](app/camera/snapshot.py) | JPEG snapshots via ffmpeg |
+| [app/camera/probe.py](app/camera/probe.py) | ffprobe detection of the source stream |
+| [app/camera/stats.py](app/camera/stats.py) | throughput metering and CBR/VBR inference |
+| [app/camera/transcode.py](app/camera/transcode.py) | codec decision and the ffmpeg command |
+| [app/camera/hwprobe.py](app/camera/hwprobe.py) | test encode per hardware encoder |
+| [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
+| [app/camera/unifi.py](app/camera/unifi.py) | certificate and invocation for unifi-cam-proxy |
+| [app/camera/unifi_runner.py](app/camera/unifi_runner.py) | proxy camera that forwards detections |
+| [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
+| [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |
+| [unraid/](unraid/) | Unraid template and icons |
 
-Eén image, twee rollen: `ROLE=controller` start de web-UI, `ROLE=camera` start een
-virtuele camera. De controller start de camera-containers via de Docker-socket;
-elke camera schrijft zijn status naar `state/<id>.json`, dat de UI uitleest.
+One image, two roles: `ROLE=controller` starts the web UI, `ROLE=camera` starts a
+virtual camera. The controller starts the camera containers through the Docker
+socket; each camera writes its status to `state/<id>.json`, which the UI reads.
 
-## Beveiliging
+## Security
 
-- De controller heeft toegang tot `/var/run/docker.sock` en kan daarmee alles op
-  de host. Zet de web-UI niet op het open internet.
-- Camera-containers draaien met `NET_ADMIN` en `NET_RAW`; dat is het minimum voor
-  een DHCP-client op een eigen interface.
-- De web-UI zit achter een login die je bij eerste gebruik zelf instelt. Het
-  beheerderswachtwoord staat scrypt-gehasht in `data/auth.json`.
-- De ONVIF-wachtwoorden van de camera's staan in platte tekst in
-  `data/cameras.json`, en ook in een gedownloade backup — de camera's moeten ze
-  kunnen aanbieden. Beperk de rechten op die map en op je backups.
-- De RTSP-relay vraagt geen wachtwoord. Iedereen op het LAN die het IP en pad kent
-  kan meekijken. Zet **Relay the stream through this camera's IP** uit als je dat
-  niet wilt; dan krijgt de NVR de bron-URL rechtstreeks.
+- The controller has access to `/var/run/docker.sock` and can therefore do
+  anything on the host. Do not expose the web UI to the open internet.
+- Camera containers run with `NET_ADMIN` and `NET_RAW`, the minimum for a DHCP
+  client on its own interface.
+- The web UI sits behind a login you set on first use. The admin password is
+  stored scrypt-hashed in `data/auth.json`.
+- The cameras' ONVIF passwords are stored in plain text in `data/cameras.json`,
+  and in a downloaded backup — the cameras have to be able to present them.
+  Restrict permissions on that directory and on your backups.
+- The RTSP relay asks for no password. Anyone on the LAN who knows the IP and path
+  can watch. Turn **Relay the stream through this camera's IP** off if you do not
+  want that; the NVR then gets the source URL directly.
+
+## Credits and licences
+
+This project stands on other people's work — MediaMTX, unifi-cam-proxy, FFmpeg,
+the ONNX Model Zoo and more. See [CREDITS.md](CREDITS.md) for the full list with
+licences, the trademark position, and a note on why this repository has no licence
+file of its own yet.
