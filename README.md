@@ -312,6 +312,14 @@ gone, and you have to adopt again.
 If you know the proxy and miss an option, **Extra proxy arguments** passes
 arguments through unchanged.
 
+`unifi-cam-proxy` is installed from a pinned commit into a virtualenv of its own,
+because its dependencies are unpinned and would otherwise be resolved against
+FastAPI's. That install is allowed to fail during the build: it is an opt-in
+feature and upstream pulls one dependency straight from a branch archive, so a
+break there should not cost you the whole image. If it did fail, the build says
+so, and a camera set to UniFi mode reports it instead of failing quietly —
+everything else keeps working.
+
 ### Object detection
 
 Cameras with no intelligence of their own send pixels and nothing else, so the

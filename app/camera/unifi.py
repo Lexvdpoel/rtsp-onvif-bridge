@@ -14,10 +14,20 @@ from __future__ import annotations
 
 import os
 import shlex
-import sys
 import shutil
 import subprocess
 import tempfile
+
+# unifi-cam-proxy lives in its own virtualenv; see the Dockerfile for why it
+# cannot share the main environment.
+VENV_PYTHON = os.environ.get("UNIFI_VENV_PYTHON", "/opt/unifi-venv/bin/python")
+APP_ROOT = os.environ.get("APP_ROOT", "/opt/bridge")
+
+
+def available() -> bool:
+    """Whether this image has unifi-cam-proxy installed at all."""
+    return os.path.exists(VENV_PYTHON)
+
 
 CERT_SUBJECT = (
     "/C=TW/L=Taipei/O=Ubiquiti Networks Inc./OU=devint"
@@ -68,9 +78,10 @@ def ensure_certificate(cam_id: str, state_dir: str) -> str:
 def build_args(cfg, state, cert: str, stream_url: str) -> list[str]:
     """The unifi-cam-proxy invocation for this camera."""
     args = [
-        # Our own entrypoint: it registers a camera class that can also report
-        # detections, then hands over to unifi-cam-proxy's own main().
-        sys.executable, "-m", "app.camera.unifi_runner",
+        # Our own entrypoint, run by the interpreter that has unifi-cam-proxy:
+        # it registers a camera class that can also report detections, then
+        # hands over to unifi-cam-proxy's own main().
+        VENV_PYTHON, "-m", "app.camera.unifi_runner",
         "--host", cfg.unifi_host,
         "--cert", cert,
         "--mac", state.mac or cfg.mac_hint,
@@ -86,10 +97,20 @@ def build_args(cfg, state, cert: str, stream_url: str) -> list[str]:
 
 
 def start(args: list[str]) -> subprocess.Popen:
+    if not available():
+        raise RuntimeError(
+            "unifi-cam-proxy is not installed in this image, so UniFi mode "
+            "cannot run. It is installed from a pinned commit during the build; "
+            "check the build output for the warning about it."
+        )
+
     printable = " ".join(
         # The adoption token is a credential; keep it out of the log.
         "***" if index and args[index - 1] == "--token" else part
         for index, part in enumerate(args)
     )
     print(f"[unifi] starting: {printable}")
-    return subprocess.Popen(args)
+    # The proxy runs on a different interpreter, so it needs to be told where
+    # this project's modules live.
+    env = dict(os.environ, PYTHONPATH=APP_ROOT)
+    return subprocess.Popen(args, env=env, cwd=APP_ROOT)

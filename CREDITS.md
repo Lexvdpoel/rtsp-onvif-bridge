@@ -16,7 +16,7 @@ source in this repository.
 | Component | Used for | Licence |
 |---|---|---|
 | [MediaMTX](https://github.com/bluenviron/mediamtx) | the per-camera RTSP relay | MIT — © 2019 aler9 |
-| [unifi-cam-proxy](https://github.com/keshavdv/unifi-cam-proxy) | adopting a camera into UniFi Protect as a native device | MIT — © 2023 Keshav Varma |
+| [unifi-cam-proxy](https://github.com/keshavdv/unifi-cam-proxy) | adopting a camera into UniFi Protect as a native device; installed from commit `cc6d3fc` into its own virtualenv | MIT — © 2023 Keshav Varma |
 | [FFmpeg](https://ffmpeg.org/) (Debian build) | transcoding, snapshots, stream probing, decoding for detection | **GPL-2.0-or-later** — see the note below |
 | [SSD MobileNet v1](https://github.com/onnx/models/tree/main/validated/vision/object_detection_segmentation/ssd-mobilenetv1) from the ONNX Model Zoo | object detection | Apache-2.0 |
 | [BusyBox](https://busybox.net/) (`udhcpc`) | the DHCP client on each camera's interface | GPL-2.0 |
@@ -24,6 +24,16 @@ source in this repository.
 | [OpenSSL](https://www.openssl.org/) | generating the UniFi client certificate | Apache-2.0 (OpenSSL 3.x) |
 | [Mesa](https://www.mesa3d.org/) and [intel-media-driver](https://github.com/intel/media-driver) VA-API drivers | hardware encoding on an Intel or AMD GPU | MIT |
 | [python:3.12-slim](https://hub.docker.com/_/python) base image | the runtime | PSF-2.0 for Python; Debian packages under their own licences |
+
+### The unifi-cam-proxy note
+
+It is installed from a pinned commit rather than from PyPI: the newest release
+there is 0.2.0 from February 2022, years behind the code this project is written
+against. It also gets a virtualenv of its own, because its dependencies are
+unpinned and would otherwise be resolved against FastAPI's.
+
+The install is allowed to fail during the build. If it does, everything except
+UniFi mode still works, and a camera set to that mode reports why.
 
 ### The FFmpeg note
 

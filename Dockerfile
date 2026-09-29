@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         openssl \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # VA-API drivers, so hardware encoding can use an Intel or AMD render node.
@@ -50,6 +51,33 @@ WORKDIR /opt/bridge
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+# unifi-cam-proxy, for the optional UniFi Protect mode, in a virtualenv of its
+# own. Three reasons it cannot share the environment above: its dependencies are
+# unpinned and pyunifiprotect would drag in a pydantic that fights with
+# FastAPI's; it declares support up to Python 3.11 while this image runs 3.12,
+# so the venv is built on Debian's python3; and it is not on PyPI in any current
+# form, so it comes from a pinned commit.
+#
+# The install is allowed to fail. It is an opt-in feature, the upstream project
+# pins nothing and pulls one dependency straight from a branch archive, so a
+# break there should not cost everyone else their image. A camera set to UniFi
+# mode without it says so plainly instead of failing quietly.
+ARG UNIFI_CAM_PROXY_REF=cc6d3fc7cdae9f1dfce575627089632aec696403
+RUN set -eu; \
+    python3 -m venv /opt/unifi-venv; \
+    if curl -fsSL -o /tmp/ucp-requirements.txt \
+        "https://raw.githubusercontent.com/keshavdv/unifi-cam-proxy/${UNIFI_CAM_PROXY_REF}/requirements.txt" \
+       && /opt/unifi-venv/bin/pip install --no-cache-dir -r /tmp/ucp-requirements.txt \
+       && /opt/unifi-venv/bin/pip install --no-cache-dir --no-deps \
+        "https://github.com/keshavdv/unifi-cam-proxy/archive/${UNIFI_CAM_PROXY_REF}.tar.gz"; \
+    then \
+        echo "unifi-cam-proxy installed at ${UNIFI_CAM_PROXY_REF}"; \
+    else \
+        echo "WARNING: unifi-cam-proxy could not be installed; UniFi mode will be unavailable"; \
+        rm -rf /opt/unifi-venv; \
+    fi; \
+    rm -f /tmp/ucp-requirements.txt
 
 COPY docker/udhcpc.script /usr/local/share/udhcpc.script
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
