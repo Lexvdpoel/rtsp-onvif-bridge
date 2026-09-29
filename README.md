@@ -521,9 +521,16 @@ socket; each camera writes its status to `state/<id>.json`, which the UI reads.
   can watch. Turn **Relay the stream through this camera's IP** off if you do not
   want that; the NVR then gets the source URL directly.
 
-## Credits and licences
+## Licence
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Use it, change
+it, build on it, commercially or otherwise; keep the licence and the attribution
+to this project, and mark the files you changed.
+
+## Credits
 
 This project stands on other people's work — MediaMTX, unifi-cam-proxy, FFmpeg,
-the ONNX Model Zoo and more. See [CREDITS.md](CREDITS.md) for the full list with
-licences, the trademark position, and a note on why this repository has no licence
-file of its own yet.
+the ONNX Model Zoo and more. [CREDITS.md](CREDITS.md) lists every component with
+the licence it is distributed under, the trademark position, and the one
+obligation that does not come from this repository: the FFmpeg binary inside a
+built image is GPL-2.0-or-later.

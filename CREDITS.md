@@ -87,11 +87,17 @@ for this project, including the camera icons in `unraid/`, which are generated b
 
 ## This project's own licence
 
-There is no licence file in this repository yet. Under copyright law that means
-the default applies — all rights reserved — and nobody else may redistribute or
-reuse it, even though the source is public. If you want others to be able to use
-it, add a `LICENSE` file. Choosing one is a decision for the repository owner, so
-it has deliberately been left alone.
+Apache License 2.0. The full text is in [LICENSE](LICENSE); the copyright and
+attribution statement is in [NOTICE](NOTICE).
 
-Note that a licence you pick here governs only the code in this repository. It
-does not change the terms of anything listed above.
+In short: you may use, change and redistribute this, including commercially, as
+long as you keep the licence and the attribution to this project, and state which
+files you changed. Apache-2.0 was chosen over MIT for two things MIT does not
+have — an express patent grant from every contributor, which matters in
+video and codec territory, and the NOTICE mechanism, which is what makes the
+attribution requirement concrete rather than implied.
+
+This licence governs only the code in this repository. It does not change the
+terms of anything listed above, and it cannot: a permissive licence on our own
+code says nothing about the GPL obligations that come with the FFmpeg binary in a
+built image.
