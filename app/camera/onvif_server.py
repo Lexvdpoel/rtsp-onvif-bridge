@@ -246,7 +246,8 @@ class OnvifService:
     # is how two NVRs watching the same camera keep separate queues.
     SUBSCRIPTION_ACTIONS = ("PullMessages", "Renew", "Unsubscribe")
 
-    def dispatch(self, action: str, node, sub_id: str = "") -> bytes | None:
+    def dispatch(self, action: str, node, sub_id: str = "",
+                 who: str = "") -> bytes | None:
         handler = getattr(self, f"op_{action}", None)
         if handler is None:
             return None
@@ -255,6 +256,8 @@ class OnvifService:
             return handler(node, media2=media2)
         if action in self.SUBSCRIPTION_ACTIONS:
             return handler(node, sub_id=sub_id)
+        if action == "CreatePullPointSubscription":
+            return handler(node, who=who)
         return handler(node)
 
     # ----------------------------------------------------------- device service
@@ -688,9 +691,9 @@ class OnvifService:
             "</tev:GetEventPropertiesResponse>"
         )
 
-    def op_CreatePullPointSubscription(self, node) -> bytes:
+    def op_CreatePullPointSubscription(self, node, who: str = "") -> bytes:
         seconds = _termination_seconds(child_text(node, "InitialTerminationTime"))
-        sub = self.events.subscribe(seconds)
+        sub = self.events.subscribe(seconds, who=who)
         address = f"{self.events_xaddr()}?sub={sub.id}"
         return envelope(
             "<tev:CreatePullPointSubscriptionResponse>"
@@ -817,6 +820,26 @@ class OnvifHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    # Counted per (client, operation) so a client retrying every few seconds
+    # produces one line and then a tally, instead of filling the log.
+    _refusals: dict = {}
+
+    def _note_refusal(self, action: str, credentials_offered: bool):
+        who = self.address_string()
+        key = (who, action)
+        count = self._refusals.get(key, 0) + 1
+        self._refusals[key] = count
+        if count in (1, 10) or count % 100 == 0:
+            reason = ("the username or password does not match"
+                      if credentials_offered
+                      else "it sent no credentials at all")
+            tail = "" if count == 1 else f" ({count} times now)"
+            print(
+                f"[onvif] refused {action} from {who}: {reason}. "
+                f"Check the credentials this camera was given against the ones "
+                f"your NVR uses{tail}."
+            )
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
@@ -839,6 +862,11 @@ class OnvifHandler(BaseHTTPRequestHandler):
         if cfg.require_auth and action not in PUBLIC_ACTIONS:
             present, valid = check_ws_security(root, cfg.username, cfg.password)
             if not valid and not self._http_auth_ok():
+                # Said out loud rather than only under ONVIF_DEBUG. An NVR that
+                # cannot authenticate simply stops asking, and the camera then
+                # looks idle when it is in fact refusing every request -- which
+                # is indistinguishable from an NVR that never tried.
+                self._note_refusal(action, present)
                 if present:
                     return self._send(
                         fault("Sender", "ter:NotAuthorized", "Invalid credentials"), 400
@@ -850,7 +878,9 @@ class OnvifHandler(BaseHTTPRequestHandler):
                 )
 
         try:
-            response = self.service.dispatch(action, node, sub_id=sub_id)
+            response = self.service.dispatch(
+                action, node, sub_id=sub_id, who=self.address_string()
+            )
         except Exception as exc:  # one bad request must not take the camera down
             print(f"[onvif] error handling {action}: {exc}")
             return self._send(fault("Receiver", "ter:Action", str(exc)), 500)

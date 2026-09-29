@@ -118,11 +118,20 @@ class EventBroker:
 
     # ------------------------------------------------------------ subscriptions
 
-    def subscribe(self, termination: float = DEFAULT_TERMINATION) -> Subscription:
+    def subscribe(self, termination: float = DEFAULT_TERMINATION,
+                  who: str = "") -> Subscription:
         sub = Subscription(uuid.uuid4().hex[:12], termination)
         with self._lock:
             self._expire()
             self._subs[sub.id] = sub
+            total = len(self._subs)
+        # Worth a line each: whether anything is listening is the first question
+        # when detections show up here and nowhere else, and a subscription that
+        # is made and immediately abandoned looks the same as one never made.
+        print(
+            f"[events] subscription {sub.id} opened by {who or 'an NVR'}, "
+            f"expiring in {int(termination)}s ({total} now)"
+        )
         return sub
 
     def get(self, sub_id: str) -> Subscription | None:
@@ -138,12 +147,21 @@ class EventBroker:
 
     def unsubscribe(self, sub_id: str) -> bool:
         with self._lock:
-            return self._subs.pop(sub_id, None) is not None
+            gone = self._subs.pop(sub_id, None) is not None
+            total = len(self._subs)
+        if gone:
+            print(f"[events] subscription {sub_id} closed by the NVR ({total} left)")
+        return gone
 
     def _expire(self):
+        """Drop subscriptions nothing renewed. Caller holds the lock."""
         now = time.monotonic()
         for sub_id in [k for k, v in self._subs.items() if v.expires < now]:
             del self._subs[sub_id]
+            # Not the same as unsubscribing: this is an NVR that stopped
+            # renewing without saying so, which is what a crashed or
+            # reconfigured one looks like from here.
+            print(f"[events] subscription {sub_id} expired; nothing renewed it")
 
     @property
     def subscribers(self) -> int:
