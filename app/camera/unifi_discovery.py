@@ -5,9 +5,11 @@ UniFi consoles send on UDP 10001, and Protect then lists it under "ready to
 adopt". This does the same thing, which is what turns adoption into clicking
 Adopt rather than fetching a token by hand.
 
-The probe is four bytes, `01 00 00 00`. The reply is a one-byte version, a
-one-byte command, a two-byte payload length, and then fields of
-type (1 byte), length (2 bytes), value.
+There are two generations of the protocol and a console only understands a reply
+in the version it asked in, so both are answered. A v1 probe is `01 00 00 00` and
+a v2 probe is `02 08 00 00`; the reply is a one-byte version, a one-byte command,
+a two-byte payload length, and then fields of type (1 byte), length (2 bytes),
+value. The body is the same either way.
 
 Field numbers and the model identities come from the reverse-engineering in the
 unifi-cam-proxy-redalert fork (MIT); see CREDITS.md.
@@ -21,9 +23,16 @@ import threading
 import time
 
 DISCOVERY_PORT = 10001
-PROBE = b"\x01\x00\x00\x00"
-VERSION = 1
-CMD_INFO = 0
+
+# Two generations of the protocol are in use, and a console understands a reply
+# only in the version it asked in, so both are answered.
+#   v1: probe 01 00 00 00, reply header 01 00
+#   v2: probe 02 08 00 00, reply header 02 06 (commands 6, 9 and 11 are all seen
+#       from real devices; 6 is the plain "here is what I am")
+PROBE_V1 = b"\x01\x00\x00\x00"
+PROBE_V2 = b"\x02\x08\x00\x00"
+PROBE = PROBE_V1  # kept for callers that only know about v1
+REPLY_HEADERS = {1: (1, 0), 2: (2, 6)}
 
 # Field identifiers in the discovery TLV.
 HWADDR = 1
@@ -56,8 +65,18 @@ def _field(field_id: int, data: bytes) -> bytes:
     return struct.pack(">BH", field_id, len(data)) + data
 
 
+def probe_version(data: bytes) -> int | None:
+    """Which protocol version a probe is asking in, or None if it is not one."""
+    if data.startswith(PROBE_V1[:2]):
+        return 1
+    if data.startswith(PROBE_V2[:2]):
+        return 2
+    return None
+
+
 def build_response(mac: str, ip: str, hostname: str, identity: dict,
-                   firmware: str, uptime: int, https_port: int = 443) -> bytes:
+                   firmware: str, uptime: int, https_port: int = 443,
+                   version: int = 1) -> bytes:
     """The packet a UniFi camera sends back to a discovery probe."""
     mac_bytes = bytes.fromhex(mac.replace(":", "").replace("-", ""))
     if len(mac_bytes) != 6:
@@ -79,7 +98,8 @@ def build_response(mac: str, ip: str, hostname: str, identity: dict,
         _field(SYSTEM_ID, struct.pack("<H", int(identity["sysid"], 0))),
         _field(DEFAULT_CREDENTIALS, struct.pack("B", 1)),
     ])
-    return struct.pack(">BBH", VERSION, CMD_INFO, len(payload)) + payload
+    header_version, command = REPLY_HEADERS.get(version, REPLY_HEADERS[1])
+    return struct.pack(">BBH", header_version, command, len(payload)) + payload
 
 
 class DiscoveryResponder(threading.Thread):
@@ -140,8 +160,9 @@ class DiscoveryResponder(threading.Thread):
             if self._stop.wait(5):
                 return
 
-    def _packet(self) -> bytes:
+    def _packet(self, version: int = 1) -> bytes:
         return build_response(
+            version=version,
             mac=self.state.mac or self.cfg.mac_hint,
             ip=self.state.ip,
             hostname=self.cfg.hostname,
@@ -151,17 +172,22 @@ class DiscoveryResponder(threading.Thread):
         )
 
     def _announce(self, sock):
-        """Tell a console on another subnet that this camera is here."""
+        """Tell a console on another subnet that this camera is here.
+
+        Sent in both protocol versions, because there is no probe to tell us
+        which one this console speaks.
+        """
         if not self.console or not self.state.ip or not self.adoptable():
             return
         host, port = console_address(self.console)
         if not host:
             return
         try:
-            sock.sendto(self._packet(), (host, port))
+            for version in (1, 2):
+                sock.sendto(self._packet(version), (host, port))
             self.announced += 1
             if self.announced == 1:
-                print(f"[unifi-discovery] announced to {host}:{port}")
+                print(f"[unifi-discovery] announced to {host}:{port} (v1 and v2)")
         except OSError as exc:
             self.error = f"could not announce to {host}: {exc}"
             print(f"[unifi-discovery] {self.error}")
@@ -182,7 +208,8 @@ class DiscoveryResponder(threading.Thread):
             except OSError:
                 return
 
-            if not data.startswith(PROBE):
+            version = probe_version(data)
+            if version is None:
                 continue
             if not self.adoptable():
                 # Already adopted; a real camera stops offering itself.
@@ -191,7 +218,7 @@ class DiscoveryResponder(threading.Thread):
                 continue
 
             try:
-                reply = self._packet()
+                reply = self._packet(version)
             except Exception as exc:  # noqa: BLE001
                 self.error = f"could not build the reply: {exc}"
                 print(f"[unifi-discovery] {self.error}")
@@ -200,7 +227,7 @@ class DiscoveryResponder(threading.Thread):
             try:
                 sock.sendto(reply, addr)
                 self.answered += 1
-                print(f"[unifi-discovery] answered {addr[0]}")
+                print(f"[unifi-discovery] answered {addr[0]} (v{version})")
             except OSError as exc:
                 print(f"[unifi-discovery] reply to {addr[0]} failed: {exc}")
 

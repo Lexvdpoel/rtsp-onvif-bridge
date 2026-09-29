@@ -337,6 +337,14 @@ announces itself straight to it every ten seconds, until something adopts it.
 So with cameras on 10.51.100.x and Protect on 10.51.0.x, leave discovery on and
 set the console address to your Protect host. Nothing else changes.
 
+The camera offers itself in both generations of the discovery protocol — v1 and
+v2 — because a console only understands a reply in the version it asked in, and
+which one it uses depends on its firmware. The log says which was answered:
+
+```
+[unifi-discovery] answered 10.51.100.1 (v2)
+```
+
 Your inter-VLAN firewall has to allow:
 
 | Direction | Port | What for |
