@@ -275,6 +275,42 @@ def _apply_probe(cfg: Config, state: State, sub: bool = False):
     cfg.encoding = probe_mod.onvif_encoding(result["codec"])
 
 
+def _half_stream(cfg: Config) -> dict | None:
+    """The middle channel: the main stream at half its size.
+
+    Protect asks for three streams of descending quality and sizes its live view
+    around what each one claims to be. A camera with only a main and a sub
+    stream leaves the middle channel with nothing of its own, and the proxy then
+    serves it the main stream while describing it as 1280x720. This fills the
+    gap honestly: a real half-size stream, described as a half-size stream.
+    """
+    if not (cfg.width and cfg.height):
+        return None
+    if cfg.width * cfg.height <= 640 * 480:
+        # The source is already small. Halving it would cost an encoder per
+        # camera to produce something barely distinguishable from the sub
+        # stream, so the middle channel is better off falling back to that.
+        # Counted in pixels rather than per axis, so a wide letterboxed stream
+        # is not excluded for being short.
+        return None
+    width, height = (cfg.width // 4) * 2, (cfg.height // 4) * 2
+    return {
+        "width": width,
+        "height": height,
+        "fps": cfg.fps,
+        # A quarter of the pixels wants roughly a quarter of the bits.
+        "bitrate_kbps": max(256, int((cfg.bitrate or 2048) / 4)),
+        "codec": cfg.output_codec if cfg.output_codec in ("h264", "h265") else "h264",
+    }
+
+
+def _stream_codec(cfg: Config, key: str, state: State) -> str:
+    """What leaves the relay for a stream: the target codec, or the source's."""
+    if cfg.output_codec in ("h264", "h265"):
+        return cfg.output_codec
+    return ((state.detected or {}).get(key) or {}).get("codec", "")
+
+
 def _relay_paths(cfg: Config, state: State) -> dict[str, dict]:
     """Decide per stream whether to relay it as-is or re-encode it.
 
@@ -306,13 +342,44 @@ def _relay_paths(cfg: Config, state: State) -> dict[str, dict]:
         plans[key] = transcode.describe(source_codec, cfg.output_codec, cfg.hwaccel)
         print(f"[relay] {key}: {plans[key]}")
 
-    transcoding = any("script" in spec for spec in paths.values())
+    # The half channel is an extra stream, not a re-encode of an advertised one,
+    # so it must not make the UI claim this camera is being transcoded.
+    transcoding = any(
+        "script" in spec for name, spec in paths.items() if name != "half"
+    )
     if cfg.output_codec in ("h264", "h265"):
         # What leaves the bridge is the requested codec, whether it was
         # re-encoded or already matched.
         cfg.encoding = "H264" if cfg.output_codec == "h264" else "H265"
         if transcoding:
             cfg.bitrate = cfg.encode_bitrate
+
+    # The half-size channel, for UniFi mode only: ONVIF advertises the streams
+    # it has rather than a fixed set of three. It reads from our own relay, not
+    # from the camera again -- the camera is opened once for the main stream and
+    # everything downstream shares it, which is what keeps a camera with a small
+    # session limit from running out.
+    half = _half_stream(cfg) if cfg.mode == "unifi" and "main" in paths else None
+    if half:
+        args = transcode.build_args(
+            source_url=f"rtsp://127.0.0.1:{cfg.rtsp_port}/main",
+            publish_url=f"rtsp://127.0.0.1:{cfg.rtsp_port}/half",
+            output_codec=half["codec"],
+            hwaccel=cfg.hwaccel,
+            bitrate_kbps=half["bitrate_kbps"],
+            preset=cfg.encode_preset,
+            transport="tcp",
+            audio=cfg.audio,
+            scale=(half["width"], half["height"]),
+        )
+        paths["half"] = {
+            "script": mediamtx.write_transcode_script("half", args, transcode.script)
+        }
+        where = "software" if cfg.hwaccel == "none" else cfg.hwaccel
+        print(
+            f"[relay] half: {half['width']}x{half['height']} "
+            f"{half['codec'].upper()} at {half['bitrate_kbps']} kbps ({where})"
+        )
 
     state.transcode = {
         "active": transcoding,
@@ -417,6 +484,27 @@ def main() -> int:
         stream_url = (
             f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy else cfg.source_url
         )
+        # One entry per Protect channel, best first: the main stream, a
+        # half-size copy of it, and the camera's own sub stream. Built together
+        # with what each one really contains, so the description Protect gets
+        # cannot disagree with what arrives.
+        streams: list[tuple[str, dict]] = [(stream_url, {
+            "width": cfg.width, "height": cfg.height, "fps": cfg.fps,
+            "bitrate_kbps": cfg.bitrate,
+            "codec": _stream_codec(cfg, "main", state),
+        })]
+        half = _half_stream(cfg) if cfg.proxy else None
+        if half:
+            streams.append((f"rtsp://127.0.0.1:{cfg.rtsp_port}/half", half))
+        if cfg.source_url_sub:
+            streams.append((
+                f"rtsp://127.0.0.1:{cfg.rtsp_port}/sub" if cfg.proxy
+                else cfg.source_url_sub,
+                {"width": cfg.width_sub, "height": cfg.height_sub,
+                 "fps": cfg.fps_sub, "bitrate_kbps": cfg.bitrate_sub,
+                 "codec": _stream_codec(cfg, "sub", state)},
+            ))
+        proxy_sources, channel_specs = unifi.channel_plan(streams)
         state_dir = _env("STATE_DIR", "/state")
         try:
             cert = unifi.ensure_certificate(cfg.id, state_dir)
@@ -429,8 +517,9 @@ def main() -> int:
             nonlocal unifi_proc, unifi_args
             try:
                 unifi_args = unifi.build_args(cfg, state, cert, stream_url,
-                                              token=token, host=host)
-                unifi_proc = unifi.start(unifi_args)
+                                              token=token, host=host,
+                                              sources=proxy_sources)
+                unifi_proc = unifi.start(unifi_args, specs=channel_specs)
                 state.message = ""
             except Exception as exc:  # noqa: BLE001 - reported, never fatal
                 state.message = f"UniFi proxy failed to start: {exc}"
@@ -511,7 +600,14 @@ def main() -> int:
             if sink is not None:
                 sink(object_type, score)
 
-        detector = detect_mod.Detector(cfg, on_detection)
+        # Read through the relay when there is one, so the camera is opened
+        # once for the sub stream and the detector shares it with whatever else
+        # wants it rather than claiming a session of its own.
+        relay_url = ""
+        if cfg.proxy:
+            path = "sub" if cfg.source_url_sub else "main"
+            relay_url = f"rtsp://127.0.0.1:{cfg.rtsp_port}/{path}"
+        detector = detect_mod.Detector(cfg, on_detection, relay_url=relay_url)
         detector.start()
 
     state.status = "running"

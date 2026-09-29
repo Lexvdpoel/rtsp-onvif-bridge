@@ -53,6 +53,24 @@ def encoder_name(output_codec: str, hwaccel: str) -> str:
     return _ENCODERS.get((output_codec, hwaccel), _ENCODERS[(output_codec, "none")])
 
 
+def scale_filter(width: int, height: int, hwaccel: str) -> str:
+    """The scaler that matches the pixel format the decoder is producing.
+
+    With hardware decoding the frames stay on the device, so a software scaler
+    would have to pull them back through system memory and push them out again.
+    Each accelerator has its own filter for staying put.
+    """
+    # Encoders reject odd dimensions, and rounding down loses at most a pixel.
+    width, height = (width // 2) * 2, (height // 2) * 2
+    if hwaccel == "vaapi":
+        return f"scale_vaapi=w={width}:h={height}"
+    if hwaccel == "qsv":
+        return f"scale_qsv=w={width}:h={height}"
+    if hwaccel == "nvenc":
+        return f"scale_cuda={width}:{height}"
+    return f"scale={width}:{height}"
+
+
 def build_args(
     source_url: str,
     publish_url: str,
@@ -63,6 +81,7 @@ def build_args(
     transport: str = "tcp",
     audio: str = "copy",
     gop: int = 30,
+    scale: tuple[int, int] | None = None,
 ) -> list[str]:
     """Full ffmpeg argument list for one transcoded path."""
     encoder = encoder_name(output_codec, hwaccel)
@@ -83,6 +102,9 @@ def build_args(
     if source_url.startswith("rtsp"):
         args += ["-rtsp_transport", transport or "tcp"]
     args += ["-i", source_url]
+
+    if scale:
+        args += ["-vf", scale_filter(scale[0], scale[1], hwaccel)]
 
     args += ["-c:v", encoder]
 

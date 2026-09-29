@@ -15,7 +15,7 @@ import asyncio
 import os
 import sys
 
-from . import unifi_logfilter
+from . import unifi_logfilter, unifi_streams
 
 DETECT_PORT = int(os.environ.get("DETECT_BRIDGE_PORT", "8099"))
 
@@ -77,6 +77,16 @@ def build_camera_class():
 
     class DetectingRTSPCam(RTSPCam):
         """RTSP backend that also accepts detections over loopback."""
+
+        async def process_video_settings(self, msg):
+            # The proxy's own answer first: it carries the destinations that
+            # start and stop the streams, and dropping any of that to correct a
+            # few numbers would trade a cosmetic fault for a real one.
+            response = await super().process_video_settings(msg)
+            specs = unifi_streams.load_specs()
+            if specs and isinstance(response, dict):
+                unifi_streams.correct(response.get("payload"), specs)
+            return response
 
         async def get_feature_flags(self) -> dict:
             flags = await super().get_feature_flags()

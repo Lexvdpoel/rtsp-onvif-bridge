@@ -203,11 +203,12 @@ class Detector(threading.Thread):
 
     FRAME_BYTES = INPUT_SIZE * INPUT_SIZE * 3
 
-    def __init__(self, cfg, on_event, model=None):
+    def __init__(self, cfg, on_event, model=None, relay_url: str = ""):
         super().__init__(name="detect", daemon=True)
         self.cfg = cfg
         self.on_event = on_event
         self.model = model
+        self.relay_url = relay_url
         self.tracker = Tracker(cfg.detect_min_hits, cfg.detect_cooldown)
         self.wanted = {t for t in ALL_TYPES if t in cfg.detect_types}
         self.error = ""
@@ -216,7 +217,15 @@ class Detector(threading.Thread):
         self._stop = threading.Event()
 
     def source(self) -> str:
-        """Prefer the sub stream: smaller frames, same objects."""
+        """Prefer the sub stream: smaller frames, same objects.
+
+        Through the relay when one is running. Reading the camera directly would
+        be a second connection to it on top of the relay's, and a camera that
+        allows only a few at once then drops one of them -- which shows up as a
+        stream that will not start, nowhere near the detector that caused it.
+        """
+        if self.relay_url:
+            return self.relay_url
         if self.cfg.source_url_sub:
             return self.cfg.source_url_sub
         return self.cfg.source_url

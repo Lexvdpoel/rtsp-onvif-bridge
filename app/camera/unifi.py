@@ -12,6 +12,7 @@ and the camera would have to be adopted again.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -77,12 +78,44 @@ def ensure_certificate(cam_id: str, state_dir: str) -> str:
     return path
 
 
+# The three channels Protect asks a camera for, in descending quality.
+VIDEO_CHANNELS = ("video1", "video2", "video3")
+
+
+def channel_plan(streams: list[tuple[str, dict]]) -> tuple[list[str], dict]:
+    """Which stream lands on which Protect channel, and what is really in it.
+
+    This mirrors unifi-cam-proxy's own rule, which is to walk the channels and
+    fall back to the last source once it runs out:
+
+        for i, stream_index in enumerate(["video1", "video2", "video3"]):
+            if not i < len(self.args.source):
+                i = -1
+
+    The sources and the descriptions are produced together on purpose. Telling
+    Protect a channel is 640x360 while handing it 1080p is the fault this
+    exists to prevent, and two lists built separately would drift apart the
+    first time the stream layout changed.
+    """
+    sources = [url for url, _ in streams]
+    specs = {}
+    for index, channel in enumerate(VIDEO_CHANNELS):
+        if index >= len(streams):
+            index = -1
+        specs[channel] = dict(streams[index][1])
+    return sources, specs
+
+
 def build_args(cfg, state, cert: str, stream_url: str,
-               token: str | None = None, host: str | None = None) -> list[str]:
+               token: str | None = None, host: str | None = None,
+               sources: list[str] | None = None) -> list[str]:
     """The unifi-cam-proxy invocation for this camera.
 
     token and host normally come from the adoption payload Protect pushed to us;
     without them the values configured by hand are used.
+
+    sources is the channel plan from channel_plan(); stream_url is the fallback
+    for when there is nothing but the main stream to offer.
     """
     args = [
         # Our own entrypoint, run by the interpreter that has unifi-cam-proxy:
@@ -123,11 +156,12 @@ def build_args(cfg, state, cert: str, stream_url: str,
                 "would read the first one as its backend name"
             )
         args += extra
-    args += ["rtsp", "-s", stream_url]
+    args += ["rtsp", "-s"]
+    args += list(sources) if sources else [stream_url]
     return args
 
 
-def start(args: list[str]) -> subprocess.Popen:
+def start(args: list[str], specs: dict | None = None) -> subprocess.Popen:
     if not available():
         raise RuntimeError(
             "unifi-cam-proxy is not installed in this image, so UniFi mode "
@@ -144,4 +178,18 @@ def start(args: list[str]) -> subprocess.Popen:
     # The proxy runs on a different interpreter, so it needs to be told where
     # this project's modules live.
     env = dict(os.environ, PYTHONPATH=APP_ROOT)
+    if specs:
+        # The probe runs in this process; the proxy that has to describe the
+        # streams runs in another. Handing the measurements over means Protect
+        # is told what the streams actually are instead of the fixed 1080p15
+        # the proxy would otherwise report for every camera.
+        env["UNIFI_STREAM_SPECS"] = json.dumps(specs)
+        for channel in VIDEO_CHANNELS:
+            spec = specs.get(channel) or {}
+            if spec:
+                print(
+                    f"[unifi] {channel}: {spec.get('width')}x{spec.get('height')} "
+                    f"@ {spec.get('fps')}fps, {spec.get('bitrate_kbps')} kbps "
+                    f"{(spec.get('codec') or '').upper()}"
+                )
     return subprocess.Popen(args, env=env, cwd=APP_ROOT)
