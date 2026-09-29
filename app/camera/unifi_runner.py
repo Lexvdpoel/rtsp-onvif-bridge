@@ -24,6 +24,31 @@ DETECT_PORT = int(os.environ.get("DETECT_BRIDGE_PORT", "8099"))
 # an event left hanging swallows every detection after the first one.
 MOTION_HOLD = float(os.environ.get("DETECT_MOTION_HOLD", "8"))
 
+# What this camera can actually recognise. Only these three: the model behind the
+# detector has no class for a parcel, and nothing here does face recognition,
+# licence plates or line crossing, so claiming them would put filters in
+# Protect's timeline that never match anything.
+SMART_DETECT_TYPES = ("person", "vehicle", "animal")
+
+
+def advertised_detections() -> list[str]:
+    """The smart-detect capability to declare, or nothing when detection is off.
+
+    unifi-cam-proxy declares mic, aec, videoMode and motionDetect, and no
+    smartDetect at all. Protect gates its smart detection on that capability, so
+    a camera that never claims it can send EventSmartDetect all day and see
+    nothing appear in the timeline. Declared here, from the same configuration
+    the detector runs on, so the claim and the behaviour cannot drift apart.
+    """
+    if os.environ.get("DETECT", "0").strip() not in ("1", "true", "yes", "on"):
+        return []
+    wanted = {
+        part.strip().lower()
+        for part in (os.environ.get("DETECT_TYPES") or "").split(",")
+        if part.strip()
+    }
+    return [name for name in SMART_DETECT_TYPES if name in wanted]
+
 
 def _object_type(name: str):
     """Map our detection type onto the proxy's enum.
@@ -52,6 +77,16 @@ def build_camera_class():
 
     class DetectingRTSPCam(RTSPCam):
         """RTSP backend that also accepts detections over loopback."""
+
+        async def get_feature_flags(self) -> dict:
+            flags = await super().get_feature_flags()
+            detections = advertised_detections()
+            if detections:
+                flags = dict(flags, smartDetect=list(detections))
+                self.logger.info(
+                    "Declaring smart detection for: %s", ", ".join(detections)
+                )
+            return flags
 
         async def run(self) -> None:
             self._motion_deadline = None
