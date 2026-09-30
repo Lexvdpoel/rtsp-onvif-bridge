@@ -17,11 +17,24 @@ source in this repository.
 |---|---|---|
 | [MediaMTX](https://github.com/bluenviron/mediamtx) | the per-camera RTSP relay | MIT — © 2019 aler9 |
 | [FFmpeg](https://ffmpeg.org/) (Debian build) | transcoding, snapshots, stream probing, decoding for detection | **GPL-2.0-or-later** — see the note below |
-| [SSD MobileNet v1](https://github.com/onnx/models/tree/main/validated/vision/object_detection_segmentation/ssd-mobilenetv1) from the ONNX Model Zoo | object detection | Apache-2.0 |
+| [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) (yolox_tiny, yolox_s) | object detection | Apache-2.0 — © 2021 Megvii Inc. |
 | [BusyBox](https://busybox.net/) (`udhcpc`) | the DHCP client on each camera's interface | GPL-2.0 |
 | [iproute2](https://wiki.linuxfoundation.org/networking/iproute2) | configuring the macvlan interface | GPL-2.0 |
 | [Mesa](https://www.mesa3d.org/) and [intel-media-driver](https://github.com/intel/media-driver) VA-API drivers | hardware encoding on an Intel or AMD GPU | MIT |
 | [python:3.12-slim](https://hub.docker.com/_/python) base image | the runtime | PSF-2.0 for Python; Debian packages under their own licences |
+
+### The YOLOX note
+
+Chosen over the better-known YOLOv8 for its licence, not its numbers.
+Ultralytics releases YOLOv8 and YOLOv11 under **AGPL-3.0**, which would
+reach into this project and make its own Apache-2.0 licence unusable for
+anyone building on it. YOLOX is Apache-2.0 and asks nothing of a user
+beyond attribution.
+
+The ONNX files are the ones Megvii published in release 0.1.1rc0. The
+pre- and post-processing here -- letterboxing, grid decoding, non-maximum
+suppression -- is written from the shapes their demo documents rather than
+copied from it.
 
 ### The FFmpeg note
 

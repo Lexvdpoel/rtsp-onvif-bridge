@@ -319,10 +319,69 @@ finds as ONVIF events, which is the channel an NVR already knows how to read.
 
 Detection runs on the sub stream at a few frames a second, through the relay, so
 the camera is opened once and the detector shares that connection with whatever
-else is reading. The model is SSD MobileNet v1 (COCO) and distinguishes three
-classes: **person**, **vehicle** and **animal**. There is no class for a parcel,
-and inferring one from "suitcase" would be a guess dressed as a detection, so
-package detection is absent rather than faked.
+else is reading.
+
+### What it can tell apart
+
+The model is **YOLOX** (Megvii, Apache-2.0), trained on COCO. It names what it
+sees rather than only its kind:
+
+| Kind | Classes |
+|---|---|
+| person | person |
+| vehicle | bicycle, car, motorcycle, bus, train, truck, boat |
+| animal | bird, cat, dog, horse, sheep, cow, bear |
+
+Pick any of them, or a kind to take all of it. `person,vehicle,animal` — what
+every camera configured before this had — still means everything, so nothing
+had to be reselected.
+
+Every detection carries both: the class for you, and the kind for your NVR,
+whose event filter understands person, vehicle and animal and nothing else. The
+ONVIF message says `ObjectType=Vehicle` with `ObjectSubType=bus` beside it.
+
+Two things are deliberately absent. There is **no van**: the model has no such
+class, and a delivery van comes back as a car or a truck depending on its shape
+— inventing a third answer from those two would be guessing. And there is **no
+package**: COCO has no parcel, and the nearest classes are suitcase, handbag and
+backpack, none of which is a box on a doorstep.
+
+### Which model, and what it costs
+
+Two sizes, chosen per camera because the cost is per camera. Measured on one
+machine at two threads, on the same photograph:
+
+| | Size | Per frame | At 3 fps |
+|---|---|---|---|
+| **Fast** — YOLOX-Tiny | 416px | ~130 ms | about a third of a core |
+| **Accurate** — YOLOX-S | 640px | ~475 ms | about one and a half cores |
+
+Fast is the default and is already a long way past what came before: on the test
+photographs it names the bus at 0.94 and the dog at 0.82, where the previous
+model could say only "vehicle" and "animal". Accurate is better on small and
+distant things, which is the case that matters outdoors — a car at the far end
+of a yard is a handful of pixels either way, and the larger input is what gives
+it a chance.
+
+### On an NVIDIA card
+
+Build with the GPU extra and both models run on the card instead of the CPU:
+
+```bash
+docker build --build-arg DETECT_GPU=1 -t rtsp-onvif-bridge:latest .
+```
+
+It is off by default because it pulls in the CUDA libraries and adds a couple of
+gigabytes to an image that is otherwise a few hundred megabytes — a poor trade
+for a host with no card. The host also needs the NVIDIA container runtime; the
+controller only asks for a GPU when the image was built this way, so a host
+without one is never left with cameras that refuse to start.
+
+The camera's log says which it got, every time it starts:
+
+```
+[detect] model accurate at 640px on CUDAExecutionProvider
+```
 
 ### What is published
 
@@ -683,6 +742,8 @@ environment (or in `docker-compose.yml`, then restart the cameras).
 | [app/common/mjpeg.py](app/common/mjpeg.py) | the live view: the request handshake, the encoder and the multipart framing |
 | [app/camera/live.py](app/camera/live.py) | writes live frames into the shared volume while someone watches |
 | [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
+| [app/camera/yolox.py](app/camera/yolox.py) | the model: letterboxing, grid decoding, suppression |
+| [app/camera/classes.py](app/camera/classes.py) | what it can tell apart, and what each belongs to |
 | [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
 | [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |
 | [unraid/](unraid/) | Unraid template and icons |

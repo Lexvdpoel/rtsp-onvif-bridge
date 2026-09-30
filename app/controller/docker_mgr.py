@@ -271,6 +271,10 @@ class DockerManager:
         source = self._state_mount_source()
         hwaccel = self.resolved_hwaccel(cam)
         extra = self._hwaccel_access(cam, hwaccel)
+        # One request covers both the encoder and the detector; asking twice is
+        # an error, so it is only added when the encoder did not already.
+        if "device_requests" not in extra:
+            extra = {**extra, **self._detect_access(cam)}
         environment = models.env_for(cam, self.state_dir)
         # "auto" is settled here, where the hardware report is available; the
         # camera container only ever sees a concrete encoder.
@@ -364,6 +368,20 @@ class DockerManager:
             # Needs the NVIDIA container runtime installed on the host.
             return {"device_requests": [DeviceRequest(count=-1, capabilities=[["gpu"]])]}
         return {}
+
+    @staticmethod
+    def _detect_access(cam: dict) -> dict:
+        """A GPU for the detector, when this image was built to use one.
+
+        Asked for only on a GPU build. A device request on a host without the
+        NVIDIA container runtime does not degrade gracefully -- the container
+        refuses to start -- so a CPU build must never make one.
+        """
+        if not cam.get("detect"):
+            return {}
+        if os.environ.get("DETECT_GPU_BUILD") != "1":
+            return {}
+        return {"device_requests": [DeviceRequest(count=-1, capabilities=[["gpu"]])]}
 
     def start(self, cam: dict):
         container = self._container(cam)

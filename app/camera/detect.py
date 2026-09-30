@@ -1,18 +1,13 @@
 """Object detection on the camera's own stream.
 
 Dumb cameras send pixels and nothing else, so the detection has to happen here.
-It runs on the sub stream: a few frames a second at low resolution is enough to
-say "a person is there", and it keeps the cost per camera small enough to run
-several at once on a CPU.
+It runs on the sub stream: a few frames a second is enough to say something is
+there, and it keeps the cost per camera small enough to run several at once.
 
-The model is SSD MobileNet v1 from the ONNX model zoo, trained on COCO. It does
-its own non-maximum suppression, so what comes out is already a short list of
-boxes rather than a field of overlapping candidates.
-
-Detections are grouped into a handful of types. COCO's classes are mapped onto
-those; COCO has no class for a parcel, so package detection is not
-possible with this model and is deliberately absent rather than faked from
-"suitcase".
+The model is YOLOX; see yolox.py for what it is and why. It names what it sees
+-- a bus rather than a vehicle, a dog rather than an animal -- and every
+detection carries both that name and the coarse type an NVR's event filter
+understands, because the two readers want different things.
 """
 
 from __future__ import annotations
@@ -22,7 +17,8 @@ import subprocess
 import threading
 import time
 
-MODEL_PATH = os.environ.get("DETECT_MODEL", "/opt/models/ssd_mobilenet_v1_10.onnx")
+from . import classes
+from .yolox import DEFAULT_MODEL, Model, ModelUnavailable  # noqa: F401
 
 # With DETECT_DEBUG=1 every candidate the model returns is logged, including the
 # ones below the confidence threshold. Without it there is no way to tell a
@@ -33,91 +29,23 @@ DEBUG = os.environ.get("DETECT_DEBUG", "").strip().lower() not in ("", "0", "fal
 # frame and the log would say nothing.
 DEBUG_FLOOR = float(os.environ.get("DETECT_DEBUG_FLOOR", "0.15"))
 
-# The model wants a square uint8 image; TensorFlow's pipeline trained it by
-# stretching to 300x300, so stretch rather than letterbox.
-INPUT_SIZE = 300
-
-PERSON = "person"
-VEHICLE = "vehicle"
-ANIMAL = "animal"
-
-# COCO class ids as the TensorFlow label map numbers them, which is what this
-# model emits.
-COCO_TO_TYPE = {
-    1: PERSON,
-    2: VEHICLE,   # bicycle
-    3: VEHICLE,   # car
-    4: VEHICLE,   # motorcycle
-    6: VEHICLE,   # bus
-    7: VEHICLE,   # train
-    8: VEHICLE,   # truck
-    16: ANIMAL,   # bird
-    17: ANIMAL,   # cat
-    18: ANIMAL,   # dog
-    19: ANIMAL,   # horse
-    20: ANIMAL,   # sheep
-    21: ANIMAL,   # cow
-    22: ANIMAL,   # elephant
-    23: ANIMAL,   # bear
-    24: ANIMAL,   # zebra
-    25: ANIMAL,   # giraffe
-}
-
-ALL_TYPES = (PERSON, VEHICLE, ANIMAL)
-
-
-class ModelUnavailable(RuntimeError):
-    pass
-
-
-class Model:
-    """The ONNX session, kept behind a small surface so it can be faked in tests."""
-
-    def __init__(self, path: str = MODEL_PATH):
-        try:
-            import onnxruntime  # imported here so the rest works without it
-        except ImportError as exc:  # pragma: no cover - depends on the image
-            raise ModelUnavailable("onnxruntime is not installed") from exc
-        if not os.path.exists(path):
-            raise ModelUnavailable(f"model file missing: {path}")
-
-        options = onnxruntime.SessionOptions()
-        # One camera should not take every core; several run side by side.
-        options.intra_op_num_threads = int(os.environ.get("DETECT_THREADS", "1"))
-        options.inter_op_num_threads = 1
-        self.session = onnxruntime.InferenceSession(
-            path, options, providers=["CPUExecutionProvider"]
-        )
-        self.input_name = self.session.get_inputs()[0].name
-
-    def infer(self, frame):
-        """frame: uint8 HxWx3. Returns [(type, score, box)] above nothing yet."""
-        import numpy as np
-
-        batch = np.expand_dims(frame, axis=0)
-        boxes, classes, scores, count = self.session.run(
-            None, {self.input_name: batch}
-        )
-        results = []
-        for index in range(int(count[0])):
-            object_type = COCO_TO_TYPE.get(int(classes[0][index]))
-            if object_type is None:
-                continue
-            # boxes are normalised ymin, xmin, ymax, xmax
-            ymin, xmin, ymax, xmax = (float(v) for v in boxes[0][index])
-            results.append(
-                (object_type, float(scores[0][index]), (xmin, ymin, xmax, ymax))
-            )
-        return results
+# What frames are decoded at before they reach the model, which letterboxes them
+# to its own size. Large enough not to have to invent detail at 640, small
+# enough to stay cheap to decode.
+FRAME_SIZE = int(os.environ.get("DETECT_FRAME_SIZE", "640"))
 
 
 class Tracker:
     """Turns a stream of per-frame results into events worth reporting.
 
-    Two rules keep it quiet: a type has to show up in several consecutive frames
-    before it counts, which throws away the single-frame flickers a small model
-    produces, and once reported it goes quiet for a while so one person walking
-    past does not generate an event per frame.
+    Two rules keep it quiet: a class has to show up in several consecutive
+    frames before it counts, which throws away the single-frame flickers a
+    model produces, and once reported it goes quiet for a while so one person
+    walking past does not generate an event per frame.
+
+    Counted per fine class rather than per coarse type: a car and a bicycle in
+    the same driveway are two things happening, and reporting one because the
+    other was already moving would be wrong.
     """
 
     def __init__(self, min_hits: int = 3, cooldown: float = 30.0):
@@ -126,35 +54,36 @@ class Tracker:
         self._hits: dict[str, int] = {}
         self._last_sent: dict[str, float] = {}
 
-    def update(self, present: dict[str, float], now: float | None = None) -> list[tuple[str, float]]:
-        """present maps type -> best score this frame. Returns types to report."""
+    def update(self, present: dict[str, float],
+               now: float | None = None) -> list[tuple[str, float]]:
+        """present maps class -> best score this frame. Returns what to report."""
         now = time.monotonic() if now is None else now
         events = []
 
-        for object_type in ALL_TYPES:
-            if object_type in present:
-                self._hits[object_type] = self._hits.get(object_type, 0) + 1
-                if self._hits[object_type] < self.min_hits:
+        for name in set(self._hits) | set(present):
+            if name in present:
+                self._hits[name] = self._hits.get(name, 0) + 1
+                if self._hits[name] < self.min_hits:
                     continue
-                last = self._last_sent.get(object_type)
+                last = self._last_sent.get(name)
                 if last is not None and now - last < self.cooldown:
                     continue
-                self._last_sent[object_type] = now
-                events.append((object_type, present[object_type]))
+                self._last_sent[name] = now
+                events.append((name, present[name]))
             else:
                 # A gap resets the run, so hits have to be consecutive.
-                self._hits[object_type] = 0
+                self._hits[name] = 0
         return events
 
 
 def frame_reader(source_url: str, transport: str, fps: float) -> subprocess.Popen:
-    """ffmpeg decoding the stream into raw frames at the size the model wants."""
+    """ffmpeg decoding the stream into raw frames for the model."""
     args = ["ffmpeg", "-nostdin", "-loglevel", "error"]
     if source_url.startswith("rtsp"):
         args += ["-rtsp_transport", transport or "tcp"]
     args += [
         "-i", source_url,
-        "-vf", f"fps={fps},scale={INPUT_SIZE}:{INPUT_SIZE}",
+        "-vf", f"fps={fps},scale={FRAME_SIZE}:{FRAME_SIZE}",
         "-f", "rawvideo",
         "-pix_fmt", "rgb24",
         "-",
@@ -165,7 +94,7 @@ def frame_reader(source_url: str, transport: str, fps: float) -> subprocess.Pope
 class Detector(threading.Thread):
     """Watches a stream and calls back when something shows up."""
 
-    FRAME_BYTES = INPUT_SIZE * INPUT_SIZE * 3
+    FRAME_BYTES = FRAME_SIZE * FRAME_SIZE * 3
 
     def __init__(self, cfg, on_event, model=None, relay_url: str = "",
                  on_frame=None):
@@ -180,7 +109,7 @@ class Detector(threading.Thread):
         self.model = model
         self.relay_url = relay_url
         self.tracker = Tracker(cfg.detect_min_hits, cfg.detect_cooldown)
-        self.wanted = {t for t in ALL_TYPES if t in cfg.detect_types}
+        self.wanted = classes.expand(cfg.detect_types)
         self.error = ""
         self.frames = 0
         self._last_debug = 0.0
@@ -216,15 +145,22 @@ class Detector(threading.Thread):
     def run(self):
         if self.model is None:
             try:
-                self.model = Model()
+                self.model = Model(getattr(self.cfg, "detect_model", DEFAULT_MODEL))
             except ModelUnavailable as exc:
                 self.error = str(exc)
                 print(f"[detect] disabled: {exc}")
                 return
+            print(
+                f"[detect] model {self.model.name} at {self.model.size}px "
+                f"on {self.model.provider}"
+            )
 
         while not self._stop.is_set():
             proc = frame_reader(self.source(), self.transport(), self.cfg.detect_fps)
-            print(f"[detect] watching {self.source()} at {self.cfg.detect_fps} fps")
+            print(
+                f"[detect] watching {self.source()} at {self.cfg.detect_fps} fps "
+                f"for {', '.join(sorted(self.wanted)) or 'nothing'}"
+            )
             try:
                 self._consume(proc)
             except Exception as exc:  # noqa: BLE001 - restart rather than die
@@ -244,7 +180,7 @@ class Detector(threading.Thread):
             if len(raw) < self.FRAME_BYTES:
                 return  # stream ended; the outer loop reopens it
             frame = np.frombuffer(raw, dtype=np.uint8).reshape(
-                INPUT_SIZE, INPUT_SIZE, 3
+                FRAME_SIZE, FRAME_SIZE, 3
             )
             self.frames += 1
             self.handle_frame(frame)
@@ -252,13 +188,16 @@ class Detector(threading.Thread):
     def handle_frame(self, frame):
         best: dict[str, float] = {}
         seen: list[tuple[str, float]] = []
-        for object_type, score, _box in self.model.infer(frame):
+        # The model is told what is wanted so it does not run suppression over
+        # classes nobody asked about; the debug log wants the rest, though.
+        asked = None if DEBUG else self.wanted
+        for name, score, _box in self.model.infer(frame, asked):
             if DEBUG and score >= DEBUG_FLOOR:
-                seen.append((object_type, score))
-            if object_type not in self.wanted or score < self.cfg.detect_confidence:
+                seen.append((name, score))
+            if name not in self.wanted or score < self.cfg.detect_confidence:
                 continue
-            if score > best.get(object_type, 0.0):
-                best[object_type] = score
+            if score > best.get(name, 0.0):
+                best[name] = score
 
         if seen:
             self._log_candidates(seen)
@@ -269,12 +208,13 @@ class Detector(threading.Thread):
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report presence: {exc}")
 
-        for object_type, score in self.tracker.update(best):
-            print(f"[detect] {object_type} ({score:.2f})")
+        for name, score in self.tracker.update(best):
+            coarse = classes.coarse_of(name)
+            print(f"[detect] {name} ({score:.2f})")
             try:
-                self.on_event(object_type, score)
+                self.on_event(name, score, coarse)
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
-                print(f"[detect] could not report {object_type}: {exc}")
+                print(f"[detect] could not report {name}: {exc}")
 
     def _log_candidates(self, seen):
         """One line a second at most, so the log stays readable."""

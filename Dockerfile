@@ -39,11 +39,32 @@ RUN set -eux; \
     rm -f /tmp/mediamtx.tar.gz; \
     chmod +x /usr/local/bin/mediamtx
 
-# COCO-trained SSD MobileNet v1 from the ONNX model zoo (Apache-2.0). Baked in
-# so the cameras never fetch it at runtime. It does its own non-maximum
-# suppression, so what comes out is already a short list of boxes.
-ARG MODEL_URL=https://github.com/onnx/models/raw/main/validated/vision/object_detection_segmentation/ssd-mobilenetv1/model/ssd_mobilenet_v1_10.onnx
-RUN mkdir -p /opt/models &&     curl -fsSL -o /opt/models/ssd_mobilenet_v1_10.onnx "${MODEL_URL}"
+# COCO-trained YOLOX from Megvii (Apache-2.0), baked in so the cameras never
+# fetch anything at runtime. Two sizes, because the cost is per camera and not
+# every host can afford the larger one:
+#
+#   tiny  416px   ~130 ms a frame on two threads
+#   s     640px   ~475 ms a frame on two threads, and better on small or
+#                 distant things, which is the case that matters outdoors
+#
+# Apache-2.0 matters here. The better-known YOLOv8 is AGPL-3.0, which would
+# make this project's own licence unusable.
+ARG YOLOX_RELEASE=https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0
+RUN mkdir -p /opt/models     && curl -fsSL -o /opt/models/yolox_tiny.onnx "${YOLOX_RELEASE}/yolox_tiny.onnx"     && curl -fsSL -o /opt/models/yolox_s.onnx "${YOLOX_RELEASE}/yolox_s.onnx"
+
+# ONNX Runtime on an NVIDIA card, for anyone who has one. Off by default: the
+# GPU build pulls in the CUDA libraries and adds a couple of gigabytes to an
+# image that is otherwise a few hundred megabytes, which is a poor trade for a
+# host without a card.
+#
+#   docker build --build-arg DETECT_GPU=1 -t rtsp-onvif-bridge:latest .
+#
+# It also needs the NVIDIA container runtime on the host; the controller only
+# asks for a GPU when the image was built this way, so a host without one is
+# not left with containers that refuse to start.
+ARG DETECT_GPU=0
+RUN if [ "${DETECT_GPU}" = "1" ]; then         pip install --no-cache-dir --force-reinstall onnxruntime-gpu==1.20.1         && python -c "import onnxruntime; print('providers:', onnxruntime.get_available_providers())";     else         echo "CPU build; rebuild with --build-arg DETECT_GPU=1 for an NVIDIA card";     fi
+ENV DETECT_GPU_BUILD=${DETECT_GPU}
 
 WORKDIR /opt/bridge
 

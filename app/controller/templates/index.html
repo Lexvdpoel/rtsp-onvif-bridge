@@ -271,6 +271,14 @@
   .check { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
   .check input { width: 16px; height: 16px; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .picker { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .picker button {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+  }
+  .picker button.on { border-color: var(--accent); color: var(--accent); }
+  .picker button.group { font-weight: 600; }
+  .picker .sep { width: 100%; height: 0; }
   pre.logs {
     margin: 0; padding: 14px; background: var(--bg); border-radius: 8px;
     font-size: 12px; line-height: 1.5; max-height: 60vh; overflow: auto;
@@ -587,10 +595,31 @@
           <div class="wide">
             <label for="f-detect-types">What to look for</label>
             <input type="text" id="f-detect-types" name="detect_types" value="person,vehicle,animal">
+            <div class="picker" id="detectPicker"></div>
             <div class="hint">
-              Comma separated: person, vehicle, animal. Packages are not on the list — the
-              detection model has no class for a parcel, and inferring one from "suitcase" would
-              be a guess dressed up as a detection.
+              Click to add or remove. <strong>person</strong>, <strong>vehicle</strong> and
+              <strong>animal</strong> each stand for everything of that kind; name a single
+              class instead to narrow it, for example <code>car,truck,dog</code>.
+              A van has no class of its own because the model has none — a delivery van comes
+              back as a car or a truck depending on its shape. Packages are absent for the same
+              reason: there is no class for a parcel, and inferring one from "suitcase" would be
+              a guess dressed up as a detection.
+            </div>
+          </div>
+          <div class="wide">
+            <label for="f-detect-model">Model</label>
+            <select id="f-detect-model" name="detect_model">
+              <option value="fast">Fast — YOLOX-Tiny, 416px</option>
+              <option value="accurate">Accurate — YOLOX-S, 640px</option>
+            </select>
+            <div class="hint">
+              Measured on one machine at two threads: fast takes about 130 ms a frame,
+              accurate about 475 ms — roughly four times the work, for a better answer on
+              small and distant things, which is the case that matters outdoors. At three
+              frames a second that is a third of a core against a core and a half, per camera.
+              Built with <code>--build-arg DETECT_GPU=1</code> and run on a host with the
+              NVIDIA container runtime, both run on the card instead; the camera log says
+              which it got.
             </div>
           </div>
           <div>
@@ -941,6 +970,64 @@ function detectedText(cam) {
   return parts.filter(Boolean).join(" · ");
 }
 
+// The classes the model knows, grouped the way they are selected: a coarse
+// name stands for everything under it.
+const DETECT_GROUPS = {
+  person: ["person"],
+  vehicle: ["bicycle", "car", "motorcycle", "bus", "train", "truck", "boat"],
+  animal: ["bird", "cat", "dog", "horse", "sheep", "cow", "bear"],
+};
+
+function detectSelection() {
+  return ($("#f-detect-types").value || "")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+function renderDetectPicker() {
+  const chosen = new Set(detectSelection());
+  const parts = [];
+  Object.keys(DETECT_GROUPS).forEach((group) => {
+    parts.push(`<button type="button" class="group ${chosen.has(group) ? "on" : ""}"
+      data-pick="${group}">${group} (all)</button>`);
+    DETECT_GROUPS[group].forEach((name) => {
+      // A class is shown as chosen when its group is, because that is what the
+      // camera will actually look for.
+      const on = chosen.has(name) || chosen.has(group);
+      parts.push(`<button type="button" class="${on ? "on" : ""}" data-pick="${name}">${name}</button>`);
+    });
+    parts.push('<span class="sep"></span>');
+  });
+  $("#detectPicker").innerHTML = parts.join("");
+}
+
+$("#detectPicker").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-pick]");
+  if (!button) return;
+  const pick = button.dataset.pick;
+  const chosen = new Set(detectSelection());
+  if (DETECT_GROUPS[pick]) {
+    // Picking a group replaces whatever of it was chosen piecemeal.
+    DETECT_GROUPS[pick].forEach((name) => chosen.delete(name));
+    if (chosen.has(pick)) chosen.delete(pick);
+    else chosen.add(pick);
+  } else {
+    const group = Object.keys(DETECT_GROUPS).find((g) => DETECT_GROUPS[g].includes(pick));
+    if (chosen.has(group)) {
+      // Turning one off inside a group means listing the rest of it.
+      chosen.delete(group);
+      DETECT_GROUPS[group].forEach((name) => { if (name !== pick) chosen.add(name); });
+    } else if (chosen.has(pick)) {
+      chosen.delete(pick);
+    } else {
+      chosen.add(pick);
+    }
+  }
+  $("#f-detect-types").value = Array.from(chosen).join(",");
+  renderDetectPicker();
+});
+
+$("#f-detect-types").addEventListener("input", renderDetectPicker);
+
 function detectText(cam) {
   if (!cam.detect) return "off";
   const seen = ((cam.runtime || {}).detections || []);
@@ -1183,7 +1270,7 @@ function drawAllShots() {
     .reverse()
     .slice(0, 400)
     .map((ev) => {
-      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      const colour = colourOf(ev.type);
       return `<button class="shot" type="button" data-key="${ev.camera_id}|${ev.name}">
         <img loading="lazy" src="/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}"
              alt="${escapeHtml(ev.camera)} — ${ev.type}">
@@ -1315,6 +1402,21 @@ const CAT_COLOUR = {
   vehicle: "var(--cat-vehicle)",
   animal: "var(--cat-animal)",
 };
+
+// A detection is named by its class -- "bus", "dog" -- and coloured by the kind
+// it belongs to, so the three colours stay meaningful however many classes are
+// switched on.
+const COARSE_OF = {
+  person: "person",
+  bicycle: "vehicle", car: "vehicle", motorcycle: "vehicle", bus: "vehicle",
+  train: "vehicle", truck: "vehicle", boat: "vehicle",
+  bird: "animal", cat: "animal", dog: "animal", horse: "animal",
+  sheep: "animal", cow: "animal", bear: "animal",
+};
+
+function colourOf(type) {
+  return CAT_COLOUR[COARSE_OF[type] || type] || "var(--muted)";
+}
 let eventsCamId = null;
 let eventsList = [];
 let eventsDayValue = "";
@@ -1369,7 +1471,7 @@ function trackMarks(clusters, top, bottom) {
       const each = span / types.length;
       const segments = types
         .map((type, i) => {
-          const colour = CAT_COLOUR[type] || "var(--muted)";
+          const colour = colourOf(type);
           // A 2px gap between segments keeps two colours from reading as one.
           const y1 = top + i * each + (i ? 1 : 0);
           const y2 = top + (i + 1) * each - (i < types.length - 1 ? 1 : 0);
@@ -1391,7 +1493,7 @@ function clusterSummary(cluster) {
   const shown = cluster.events.slice(0, 6);
   const rows = shown
     .map((ev) => {
-      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      const colour = colourOf(ev.type);
       const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
       return `<div class="trow"><span class="swatch" style="background:${colour}"></span>` +
         `${who}${ev.type}<span class="tval">${clockOf(ev.at)}</span></div>`;
@@ -1428,7 +1530,7 @@ function shotsSideBySide(cluster, urlOf) {
   // see what the single mark was hiding.
   return cluster.events
     .map((ev) => {
-      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      const colour = colourOf(ev.type);
       const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
       return `<figure>
         <img src="${urlOf(ev)}" alt="${who}${ev.type}">
@@ -1483,7 +1585,7 @@ function drawShots() {
   const ordered = eventsList.slice().reverse();
   grid.innerHTML = ordered
     .map((ev) => {
-      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      const colour = colourOf(ev.type);
       return `<button class="shot" data-name="${ev.name}" type="button">
         <img loading="lazy" src="${shotUrl(ev)}" alt="${ev.type} at ${clockOf(ev.at)}">
         <span class="meta">
@@ -1887,6 +1989,7 @@ function fillForm(cam) {
     if (element.type === "checkbox") element.checked = !!source[element.name];
     else element.value = source[element.name] == null ? "" : source[element.name];
   }
+  renderDetectPicker();
 }
 
 async function openEdit(cam) {

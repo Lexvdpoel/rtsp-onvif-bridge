@@ -80,6 +80,7 @@ class Config:
     detect_confidence: float
     detect_min_hits: int
     detect_cooldown: int
+    detect_model: str
     event_hold: int
     clips: bool
     width: int
@@ -130,6 +131,7 @@ class Config:
             detect_confidence=float(_env("DETECT_CONFIDENCE", "0.5") or 0.5),
             detect_min_hits=_env_int("DETECT_MIN_HITS", 3),
             detect_cooldown=_env_int("DETECT_COOLDOWN", 30),
+            detect_model=_env("DETECT_MODEL", "fast"),
             event_hold=_env_int("EVENT_HOLD", 8),
             clips=_env_bool("CLIPS", True),
             width=_env_int("VIDEO_WIDTH", 1920),
@@ -426,14 +428,15 @@ def main() -> int:
             )
             recorder.start()
 
-        def on_detection(object_type: str, score: float):
+        def on_detection(name: str, score: float, coarse: str):
             state.detections.append(
-                {"type": object_type, "score": round(score, 3), "at": time.time()}
+                {"type": name, "coarse": coarse,
+                 "score": round(score, 3), "at": time.time()}
             )
             del state.detections[:-50]
-            events.note_detection(object_type, score)
+            events.note_detection(name, score, coarse)
             if recorder is not None:
-                recorder.record(object_type, score)
+                recorder.record(name, score)
 
         # Read through the relay when there is one, so the camera is opened
         # once for the sub stream and the detector shares it with whatever else

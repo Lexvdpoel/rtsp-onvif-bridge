@@ -649,6 +649,7 @@ class OnvifService:
             "<tt:Data>"
             + simple % ("ObjectId", "xs:string")
             + simple % ("ObjectType", "xs:string")
+            + simple % ("ObjectSubType", "xs:string")
             + simple % ("Likelihood", "xs:float")
             + "</tt:Data>"
             "</tt:MessageDescription></Object></ObjectDetector>",

@@ -200,8 +200,15 @@ class EventBroker:
             self._motion_until = time.monotonic() + self.hold
             self._set_motion(True)
 
-    def note_detection(self, object_type: str, score: float):
-        """A detection worth reporting as its own smart event."""
+    def note_detection(self, name: str, score: float, coarse: str = ""):
+        """A detection worth reporting as its own smart event.
+
+        name is what the model called it -- "bus", "dog" -- and coarse is the
+        type an NVR filters on. ObjectType carries the coarse one because that
+        is what the ONVIF schema means by it; the finer name rides along beside
+        it, for the clients that read more than the minimum.
+        """
+        object_type = coarse or name
         info = CLASSES.get(object_type)
         if info is None:
             return
@@ -218,6 +225,7 @@ class EventBroker:
             # this, so it is not pretended to be stable across events.
             {"ObjectId": str(int(time.time()) % 100000),
              "ObjectType": info["object_type"],
+             "ObjectSubType": name,
              "Likelihood": f"{score:.3f}"},
         ))
         self.publish(Message(

@@ -56,6 +56,10 @@ DEFAULTS = {
     # On-camera object detection, run on the sub stream.
     "detect": False,
     "detect_types": "person,vehicle,animal",
+    # Which network to run. "fast" is YOLOX-Tiny at 416px; "accurate" is
+    # YOLOX-S at 640, about four times the work for a better answer on
+    # small and distant things.
+    "detect_model": "fast",
     "detect_fps": 3,
     "detect_confidence": 0.5,
     "detect_min_hits": 3,
@@ -233,14 +237,22 @@ def validate(cam: dict) -> list[str]:
             errors.append("Detection confidence must be between 0.1 and 0.99.")
         if not 1 <= int(cam.get("event_hold", 8)) <= 300:
             errors.append("Motion hold must be between 1 and 300 seconds.")
-        wanted = {t.strip() for t in (cam.get("detect_types") or "").split(",") if t.strip()}
-        if not wanted:
-            errors.append("Pick at least one object type to detect.")
-        elif not wanted <= {"person", "vehicle", "animal"}:
+        from ..camera import classes
+        if not classes.expand(cam.get("detect_types", "")):
+            errors.append("Pick at least one thing to detect.")
+        unknown = classes.validate(cam.get("detect_types", ""))
+        if unknown:
             errors.append(
-                "Detectable types are person, vehicle and animal. "
-                "The detection model has no class for a package."
+                "The model does not know "
+                + ", ".join(sorted(unknown))
+                + ". It can detect: "
+                + ", ".join(sorted(classes.FINE))
+                + " -- or person, vehicle and animal for all of a kind. There "
+                "is no class for a package, and inferring one from 'suitcase' "
+                "would be a guess dressed up as a detection."
             )
+        if cam.get("detect_model") not in ("fast", "accurate"):
+            errors.append("Detection model must be fast or accurate.")
     if cam.get("source_mac") and not normalize_mac(cam["source_mac"]):
         errors.append("Source MAC must be 12 hex digits, e.g. a0:bb:3e:11:22:33.")
     if cam.get("rtsp_transport") not in ("tcp", "udp"):
@@ -291,6 +303,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "SNAPSHOT": "1" if cam["snapshot_enabled"] else "0",
         "DETECT": "1" if cam.get("detect") else "0",
         "DETECT_TYPES": cam.get("detect_types") or "person",
+        "DETECT_MODEL": cam.get("detect_model") or "fast",
         "DETECT_FPS": str(cam.get("detect_fps") or 3),
         "DETECT_CONFIDENCE": str(cam.get("detect_confidence") or 0.5),
         "DETECT_MIN_HITS": str(cam.get("detect_min_hits") or 3),
