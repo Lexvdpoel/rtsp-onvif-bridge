@@ -68,10 +68,11 @@ class Recorder(threading.Thread):
         self.dropped = 0
         self.error = ""
 
-    def record(self, object_type: str, score: float, at: float | None = None):
+    def record(self, object_type: str, score: float, box=None,
+               at: float | None = None):
         """Called from the detector. Never blocks, never raises."""
         try:
-            self._queue.put_nowait((object_type, score, at or time.time()))
+            self._queue.put_nowait((object_type, score, box, at or time.time()))
         except queue.Full:
             self.dropped += 1
             if self.dropped in (1, 10) or self.dropped % 100 == 0:
@@ -84,16 +85,16 @@ class Recorder(threading.Thread):
     def run(self):
         while not self._stop.is_set():
             try:
-                object_type, score, at = self._queue.get(timeout=0.5)
+                object_type, score, box, at = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                self._write(object_type, score, at)
+                self._write(object_type, score, box, at)
             except Exception as exc:  # noqa: BLE001 - one failure is not fatal
                 self.error = str(exc)[:200]
                 print(f"[clips] could not save a still: {exc}")
 
-    def _write(self, object_type: str, score: float, at: float):
+    def _write(self, object_type: str, score: float, box, at: float):
         image = grab(self.source_url, self.transport)
         if not image:
             self.error = "ffmpeg returned no frame"
@@ -102,7 +103,7 @@ class Recorder(threading.Thread):
             clips.camera_dir(self.state_dir, self.cam_id), clips.day_of(at)
         )
         os.makedirs(directory, exist_ok=True)
-        path = os.path.join(directory, clips.filename(at, object_type, score))
+        path = os.path.join(directory, clips.filename(at, object_type, score, box))
         # Written under a temporary name and moved into place, so the controller
         # never lists a file it is halfway through reading.
         tmp = path + ".part"

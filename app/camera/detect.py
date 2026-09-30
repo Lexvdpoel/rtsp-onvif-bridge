@@ -35,44 +35,84 @@ DEBUG_FLOOR = float(os.environ.get("DETECT_DEBUG_FLOOR", "0.15"))
 FRAME_SIZE = int(os.environ.get("DETECT_FRAME_SIZE", "640"))
 
 
+def overlap(a, b) -> float:
+    """How much two boxes share, as intersection over union."""
+    if not a or not b:
+        return 0.0
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    left, top = max(ax1, bx1), max(ay1, by1)
+    right, bottom = min(ax2, bx2), min(ay2, by2)
+    if right <= left or bottom <= top:
+        return 0.0
+    both = (right - left) * (bottom - top)
+    either = ((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - both)
+    return both / either if either > 0 else 0.0
+
+
+# How much a box has to overlap the last one reported before it counts as the
+# same thing still sitting there. A car that parks is detected in every frame
+# for as long as it stays; without this it would be reported for ever.
+STILL_OVERLAP = float(os.environ.get("DETECT_STILL_OVERLAP", "0.6"))
+
+
 class Tracker:
     """Turns a stream of per-frame results into events worth reporting.
 
-    Two rules keep it quiet: a class has to show up in several consecutive
-    frames before it counts, which throws away the single-frame flickers a
-    model produces, and once reported it goes quiet for a while so one person
-    walking past does not generate an event per frame.
+    Three rules keep it quiet:
+
+    * a class has to show up in several consecutive frames before it counts,
+      which throws away the single-frame flickers a model produces;
+    * once reported it goes quiet for a while, so one person walking past is
+      one event rather than one per frame;
+    * and something that has not moved since it was reported is not reported
+      again. A parked car is in every frame it is parked in, and a log full of
+      it is a log nobody reads.
 
     Counted per fine class rather than per coarse type: a car and a bicycle in
     the same driveway are two things happening, and reporting one because the
     other was already moving would be wrong.
     """
 
-    def __init__(self, min_hits: int = 3, cooldown: float = 30.0):
+    def __init__(self, min_hits: int = 3, cooldown: float = 30.0,
+                 still_overlap: float = STILL_OVERLAP):
         self.min_hits = max(1, min_hits)
         self.cooldown = cooldown
+        self.still_overlap = still_overlap
         self._hits: dict[str, int] = {}
         self._last_sent: dict[str, float] = {}
+        self._last_box: dict[str, tuple] = {}
 
-    def update(self, present: dict[str, float],
-               now: float | None = None) -> list[tuple[str, float]]:
-        """present maps class -> best score this frame. Returns what to report."""
+    def update(self, present: dict,
+               now: float | None = None) -> list[tuple[str, float, tuple]]:
+        """present maps class -> (score, box). Returns what to report."""
         now = time.monotonic() if now is None else now
         events = []
 
         for name in set(self._hits) | set(present):
-            if name in present:
-                self._hits[name] = self._hits.get(name, 0) + 1
-                if self._hits[name] < self.min_hits:
-                    continue
-                last = self._last_sent.get(name)
-                if last is not None and now - last < self.cooldown:
-                    continue
-                self._last_sent[name] = now
-                events.append((name, present[name]))
-            else:
-                # A gap resets the run, so hits have to be consecutive.
+            if name not in present:
+                # A gap resets the run, so hits have to be consecutive -- and
+                # it forgets where the thing was, so the same car returning to
+                # the same spot later is a new event rather than the old one.
                 self._hits[name] = 0
+                self._last_box.pop(name, None)
+                continue
+
+            score, box = present[name]
+            self._hits[name] = self._hits.get(name, 0) + 1
+            if self._hits[name] < self.min_hits:
+                continue
+            last = self._last_sent.get(name)
+            if last is not None and now - last < self.cooldown:
+                continue
+            if overlap(box, self._last_box.get(name)) >= self.still_overlap:
+                # Same place as last time: it has not gone anywhere. Keep the
+                # box current so slow drift does not accumulate into a report.
+                self._last_box[name] = box
+                continue
+            self._last_sent[name] = now
+            self._last_box[name] = box
+            events.append((name, score, box))
         return events
 
 
@@ -186,33 +226,33 @@ class Detector(threading.Thread):
             self.handle_frame(frame)
 
     def handle_frame(self, frame):
-        best: dict[str, float] = {}
+        best: dict[str, tuple] = {}
         seen: list[tuple[str, float]] = []
         # The model is told what is wanted so it does not run suppression over
         # classes nobody asked about; the debug log wants the rest, though.
         asked = None if DEBUG else self.wanted
-        for name, score, _box in self.model.infer(frame, asked):
+        for name, score, box in self.model.infer(frame, asked):
             if DEBUG and score >= DEBUG_FLOOR:
                 seen.append((name, score))
             if name not in self.wanted or score < self.cfg.detect_confidence:
                 continue
-            if score > best.get(name, 0.0):
-                best[name] = score
+            if score > best.get(name, (0.0, None))[0]:
+                best[name] = (score, box)
 
         if seen:
             self._log_candidates(seen)
 
         if self.on_frame is not None:
             try:
-                self.on_frame(best)
+                self.on_frame({name: score for name, (score, _) in best.items()})
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report presence: {exc}")
 
-        for name, score in self.tracker.update(best):
+        for name, score, box in self.tracker.update(best):
             coarse = classes.coarse_of(name)
             print(f"[detect] {name} ({score:.2f})")
             try:
-                self.on_event(name, score, coarse)
+                self.on_event(name, score, coarse, box)
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report {name}: {exc}")
 

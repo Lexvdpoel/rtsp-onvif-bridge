@@ -23,8 +23,17 @@ import time
 
 DIR_NAME = "events"
 
-# <epoch ms>-<type>-<score as 3 digits>.jpg, e.g. 1759152000123-person-091.jpg
-_NAME = re.compile(r"^(\d{10,16})-([a-z]+)-(\d{1,3})\.jpg$")
+# <epoch ms>-<type>-<score>[-<box>].jpg, for example
+#   1759152000123-person-091-0120-0340-0560-0880.jpg
+#
+# The box is four thousandths-of-the-frame values: left, top, right, bottom. It
+# is optional because stills written before there was one are still perfectly
+# good stills, and a store that rejected them would be throwing away history to
+# tidy up a filename.
+_NAME = re.compile(
+    r"^(\d{10,16})-([a-z]+)-(\d{1,3})"
+    r"(?:-(\d{4})-(\d{4})-(\d{4})-(\d{4}))?\.jpg$"
+)
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -40,11 +49,27 @@ def day_of(epoch_seconds: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(epoch_seconds))
 
 
-def filename(epoch_seconds: float, object_type: str, score: float) -> str:
+def filename(epoch_seconds: float, object_type: str, score: float,
+             box=None) -> str:
     """A name that is also the record. Sorts by time within a day."""
     millis = int(epoch_seconds * 1000)
     safe_type = re.sub(r"[^a-z]", "", (object_type or "unknown").lower()) or "unknown"
-    return f"{millis}-{safe_type}-{int(round(max(0.0, min(1.0, score)) * 100)):03d}.jpg"
+    graded = int(round(max(0.0, min(1.0, score)) * 100))
+    stem = f"{millis}-{safe_type}-{graded:03d}"
+    try:
+        corners = [float(value) for value in (box or ())]
+    except (TypeError, ValueError):
+        # Whatever was handed in was not a box. A still without an outline is
+        # worth far more than no still at all, so it is simply left off.
+        corners = []
+    if len(corners) == 4:
+        # Thousandths, clamped: a box the model put slightly outside the frame
+        # would otherwise not survive the round trip.
+        parts = "-".join(
+            f"{int(round(max(0.0, min(1.0, value)) * 1000)):04d}" for value in corners
+        )
+        stem = f"{stem}-{parts}"
+    return f"{stem}.jpg"
 
 
 def parse(name: str) -> dict | None:
@@ -52,13 +77,17 @@ def parse(name: str) -> dict | None:
     match = _NAME.match(name)
     if not match:
         return None
-    millis, object_type, score = match.groups()
-    return {
+    millis, object_type, score = match.group(1, 2, 3)
+    corners = match.group(4, 5, 6, 7)
+    event = {
         "name": name,
         "at": int(millis) / 1000.0,
         "type": object_type,
         "score": int(score) / 100.0,
     }
+    if all(corners):
+        event["box"] = [int(value) / 1000.0 for value in corners]
+    return event
 
 
 def is_day(name: str) -> bool:

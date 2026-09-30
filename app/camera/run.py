@@ -428,15 +428,15 @@ def main() -> int:
             )
             recorder.start()
 
-        def on_detection(name: str, score: float, coarse: str):
+        def on_detection(name: str, score: float, coarse: str, box=None):
             state.detections.append(
-                {"type": name, "coarse": coarse,
+                {"type": name, "coarse": coarse, "box": box,
                  "score": round(score, 3), "at": time.time()}
             )
             del state.detections[:-50]
             events.note_detection(name, score, coarse)
             if recorder is not None:
-                recorder.record(name, score)
+                recorder.record(name, score, box)
 
         # Read through the relay when there is one, so the camera is opened
         # once for the sub stream and the detector shares it with whatever else

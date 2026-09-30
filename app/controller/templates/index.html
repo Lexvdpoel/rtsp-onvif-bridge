@@ -223,6 +223,12 @@
   .strip img { display: block; width: 100%; border-radius: 8px; background: var(--bg); }
   .strip figcaption { font-size: 12px; color: var(--muted); margin-top: 6px;
     display: flex; align-items: center; gap: 6px; }
+  /* The box is drawn over the picture rather than into it: the still stays the
+     frame the camera sent, and the outline is crisp at any size it is shown. */
+  .framed { position: relative; display: block; line-height: 0; }
+  .framed svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .framed rect { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .shot .framed rect { stroke-width: 3; }
   .tl { display: block; width: 100%; height: 66px; overflow: visible; }
   .tl-hours { display: flex; justify-content: space-between; font-size: 11px;
     color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 14px; }
@@ -236,7 +242,11 @@
   }
   .shot:hover, .shot:focus-visible { border-color: var(--accent); }
   .shot.on { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .shot img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: var(--border); }
+  /* Shown whole rather than cropped to a tidy rectangle: object-fit: cover
+     would cut away part of the frame, and the outline drawn over it is in the
+     frame's own coordinates -- a cropped thumbnail would put the box somewhere
+     the thing is not. */
+  .shot img { display: block; width: 100%; height: auto; background: var(--border); }
   .shot .meta { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; }
   .shot .meta .when { font-variant-numeric: tabular-nums; }
   .shot .meta .score { margin-left: auto; color: var(--muted); }
@@ -1272,8 +1282,10 @@ function drawAllShots() {
     .map((ev) => {
       const colour = colourOf(ev.type);
       return `<button class="shot" type="button" data-key="${ev.camera_id}|${ev.name}">
-        <img loading="lazy" src="/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}"
-             alt="${escapeHtml(ev.camera)} — ${ev.type}">
+        <span class="framed">
+          <img loading="lazy" src="/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}"
+               alt="${escapeHtml(ev.camera)} — ${ev.type}">${boxOverlay(ev)}
+        </span>
         <span class="meta">
           <span class="swatch" style="background:${colour}"></span>
           <span class="when">${clockOf(ev.at)}</span>
@@ -1525,6 +1537,18 @@ function bindTrack(svgId, tipId, clusters, onPick) {
   });
 }
 
+function boxOverlay(ev) {
+  // Nothing to draw for a still written before there were boxes, and an empty
+  // overlay is better than a guess at where the thing was.
+  if (!ev.box || ev.box.length !== 4) return "";
+  const [x1, y1, x2, y2] = ev.box;
+  const w = Math.max(0, x2 - x1);
+  const h = Math.max(0, y2 - y1);
+  return `<svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+    <rect x="${x1}" y="${y1}" width="${w}" height="${h}" stroke="${colourOf(ev.type)}"/>
+  </svg>`;
+}
+
 function shotsSideBySide(cluster, urlOf) {
   // Everything in the group, side by side: the reason to click a cluster is to
   // see what the single mark was hiding.
@@ -1533,7 +1557,9 @@ function shotsSideBySide(cluster, urlOf) {
       const colour = colourOf(ev.type);
       const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
       return `<figure>
-        <img src="${urlOf(ev)}" alt="${who}${ev.type}">
+        <span class="framed">
+          <img src="${urlOf(ev)}" alt="${who}${ev.type}">${boxOverlay(ev)}
+        </span>
         <figcaption>
           <span class="swatch" style="background:${colour}"></span>
           ${who}${ev.type} · ${clockOf(ev.at)} · ${Math.round(ev.score * 100)}%
@@ -1587,7 +1613,9 @@ function drawShots() {
     .map((ev) => {
       const colour = colourOf(ev.type);
       return `<button class="shot" data-name="${ev.name}" type="button">
-        <img loading="lazy" src="${shotUrl(ev)}" alt="${ev.type} at ${clockOf(ev.at)}">
+        <span class="framed">
+          <img loading="lazy" src="${shotUrl(ev)}" alt="${ev.type} at ${clockOf(ev.at)}">${boxOverlay(ev)}
+        </span>
         <span class="meta">
           <span class="swatch" style="background:${colour}"></span>
           <span class="when">${clockOf(ev.at)}</span>

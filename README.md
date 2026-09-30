@@ -400,6 +400,39 @@ Nothing the model cannot see is advertised. There is no tamper detection, no
 line crossing, no face recognition and no licence plate reading, so no filter in
 your NVR is left waiting on an event that will never arrive.
 
+### What is drawn on a still
+
+Every detection saves the box the model put round what it found, and the
+timeline draws it over the picture. The outline is drawn on top rather than
+burnt into the image, so the still stays the frame the camera sent and the
+outline is crisp at whatever size it is shown. It is coloured by kind, like
+everything else.
+
+The box lives in the filename, because the store deliberately has no index:
+
+```
+1759152000123-car-091-0120-0340-0560-0880.jpg
+                       left  top  right bottom, in thousandths of the frame
+```
+
+Stills written before this have no box and simply do not get an outline.
+
+### A parked car is reported once
+
+Something that has not moved since it was last reported is not reported again.
+A car that parks on the drive is detected in every single frame for as long as
+it sits there, and without this rule the timeline would fill with it — one
+entry per quiet period, all night.
+
+The test is where it is rather than what it is: a detection whose box still
+covers most of the last reported one is the same thing, still sitting there. It
+becomes news again when it moves, or when it goes away and something comes
+back. A car leaving and another parking in the same spot is two events, because
+the drive was empty in between.
+
+Tune it with `DETECT_STILL_OVERLAP` (0.6 by default) if your camera's boxes
+wobble more than most: lower reports more, higher reports less.
+
 ### Motion is a state, not a ping
 
 Motion turns on when something is in view and off again once nothing has been
