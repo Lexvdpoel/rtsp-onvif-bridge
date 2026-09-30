@@ -162,12 +162,50 @@
 
   .empty { text-align: center; color: var(--muted); padding: 48px 20px; }
 
+  /* ---- view switcher ---- */
+  .views { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+  .views button { border-radius: 999px; }
+  .views button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---- live grid ---- */
+  .live-grid {
+    display: grid; gap: 10px;
+    /* The whole point of "auto-scaling": the column count follows the width of
+       the window, and the tile size sets how many fit. */
+    grid-template-columns: repeat(auto-fill, minmax(var(--tile, 320px), 1fr));
+  }
+  .tile {
+    position: relative; background: #000; border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .tile img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+  .tile .label {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 9px; font-size: 12px; color: #fff;
+    background: linear-gradient(transparent, rgba(0, 0, 0, .72));
+  }
+  .tile .label .spacer { flex: 1; }
+  .tile .state { font-variant-numeric: tabular-nums; opacity: .85; }
+  .tile.down img { opacity: .25; }
+  .tile .over {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; color: #fff; font-size: 13px; text-align: center;
+    padding: 12px; pointer-events: none;
+  }
+
   /* ---- detection timeline ---- */
   .tl-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
   .tl-bar select { width: auto; min-width: 200px; }
   .tl-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-left: auto; }
   .tl-legend .item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
   .tl-wrap { position: relative; margin-bottom: 4px; }
+  .lane { display: grid; grid-template-columns: minmax(90px, 150px) 1fr;
+    align-items: center; gap: 12px; margin-bottom: 4px; }
+  .lane .who { font-size: 12px; color: var(--muted); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .lane .track { position: relative; }
+  .lane svg { display: block; width: 100%; height: 26px; overflow: visible; }
   .tl { display: block; width: 100%; height: 66px; overflow: visible; }
   .tl-hours { display: flex; justify-content: space-between; font-size: 11px;
     color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 14px; }
@@ -290,8 +328,58 @@
 
 <main>
   <div id="banner" class="banner" hidden></div>
-  <div class="kpis" id="kpis"></div>
-  <div id="list"></div>
+
+  <nav class="views" id="views">
+    <button data-view="cameras" class="on">Cameras</button>
+    <button data-view="live">Live</button>
+    <button data-view="timeline">Timeline</button>
+  </nav>
+
+  <section id="view-cameras">
+    <div class="kpis" id="kpis"></div>
+    <div id="list"></div>
+  </section>
+
+  <section id="view-live" hidden>
+    <div class="tl-bar">
+      <label for="liveQuality" style="font-size:12px;color:var(--muted)">Quality</label>
+      <select id="liveQuality">
+        <option value="low">Low — sub stream, easy on the host</option>
+        <option value="high">High — main stream, one encoder per tile</option>
+      </select>
+      <label for="liveSize" style="font-size:12px;color:var(--muted)">Tile size</label>
+      <select id="liveSize">
+        <option value="220">Small</option>
+        <option value="320" selected>Medium</option>
+        <option value="460">Large</option>
+      </select>
+      <span class="pill" id="liveNote"><span>paused</span></span>
+    </div>
+    <div class="live-grid" id="liveGrid"></div>
+    <div class="empty" id="liveEmpty" hidden>No cameras are running.</div>
+  </section>
+
+  <section id="view-timeline" hidden>
+    <div class="tl-bar">
+      <select id="allDay"></select>
+      <span class="pill" id="allCount"><span>—</span></span>
+      <div class="tl-legend">
+        <span class="item"><span class="swatch" style="background:var(--cat-person)"></span>person</span>
+        <span class="item"><span class="swatch" style="background:var(--cat-vehicle)"></span>vehicle</span>
+        <span class="item"><span class="swatch" style="background:var(--cat-animal)"></span>animal</span>
+      </div>
+    </div>
+    <div class="card">
+      <div id="allLanes"></div>
+      <div class="tl-hours" id="allHours"></div>
+    </div>
+    <div class="viewer" id="allViewer" hidden>
+      <img id="allImage" alt="">
+      <div class="cap" id="allCaption"></div>
+    </div>
+    <div class="tl-shots" id="allShots" style="max-height:none"></div>
+    <div class="empty" id="allEmpty" hidden>Nothing recorded on this day.</div>
+  </section>
 </main>
 
 <dialog id="editDialog">
@@ -841,6 +929,231 @@ function detectText(cam) {
   return `${last.type} ${ago}s ago (${seen.length} recent)`;
 }
 
+// ---------------------------------------------------------------- the views
+
+let currentView = "cameras";
+
+function showView(name) {
+  currentView = name;
+  $$("#views button").forEach((b) => b.classList.toggle("on", b.dataset.view === name));
+  ["cameras", "live", "timeline"].forEach((v) => {
+    $(`#view-${v}`).hidden = v !== name;
+  });
+  // Leaving the live view has to stop the streams, not merely hide them: an
+  // <img> left pointing at a multipart stream keeps an encoder running on the
+  // host for as long as the tab is open.
+  if (name !== "live") stopLive();
+  else startLive();
+  if (name === "timeline") loadAllDays().catch((err) => toast(err.message, true));
+}
+
+$("#views").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-view]");
+  if (button) showView(button.dataset.view);
+});
+
+// ------------------------------------------------------------------ live grid
+
+let liveOn = false;
+
+function liveCameras() {
+  return cameras.filter((c) => c.enabled && (c.runtime || {}).ip);
+}
+
+function renderLiveGrid() {
+  const grid = $("#liveGrid");
+  const list = liveCameras();
+  $("#liveEmpty").hidden = list.length > 0;
+  const size = $("#liveSize").value;
+  grid.style.setProperty("--tile", `${size}px`);
+  grid.innerHTML = list
+    .map((cam) => `
+      <div class="tile" data-id="${cam.id}">
+        <img alt="${escapeHtml(cam.name)}" data-id="${cam.id}">
+        <div class="over" data-role="over">connecting…</div>
+        <div class="label">
+          <span>${escapeHtml(cam.name)}</span>
+          <span class="spacer"></span>
+          <span class="state">${escapeHtml((cam.runtime || {}).ip || "")}</span>
+        </div>
+      </div>`)
+    .join("");
+  if (liveOn) attachStreams();
+}
+
+function attachStreams() {
+  const quality = $("#liveQuality").value;
+  const width = quality === "high" ? 960 : 640;
+  const fps = quality === "high" ? 6 : 4;
+  $$("#liveGrid img").forEach((img) => {
+    const id = img.dataset.id;
+    const over = img.parentElement.querySelector('[data-role="over"]');
+    img.onload = () => { if (over) over.textContent = ""; };
+    img.onerror = () => {
+      img.parentElement.classList.add("down");
+      if (over) over.textContent = "no picture";
+    };
+    // The timestamp stops a browser reusing a connection it already has, which
+    // would otherwise show the previous quality after switching.
+    img.src = `/api/cameras/${id}/live.mjpeg?quality=${quality}&fps=${fps}`
+      + `&width=${width}&t=${Date.now()}`;
+  });
+  $("#liveNote").innerHTML =
+    `<span>${liveCameras().length} live · ${quality === "high" ? "main" : "sub"} stream</span>`;
+}
+
+function startLive() {
+  liveOn = true;
+  renderLiveGrid();
+  attachStreams();
+}
+
+function stopLive() {
+  liveOn = false;
+  // Clearing src is what actually closes the connection; removing the element
+  // alone leaves some browsers holding it open.
+  $$("#liveGrid img").forEach((img) => { img.src = ""; });
+  $("#liveNote").innerHTML = "<span>paused</span>";
+}
+
+$("#liveQuality").addEventListener("change", () => { if (liveOn) startLive(); });
+$("#liveSize").addEventListener("change", () => {
+  $("#liveGrid").style.setProperty("--tile", `${$("#liveSize").value}px`);
+});
+// A tab in the background is still a running encoder per tile on the host.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopLive();
+  else if (currentView === "live") startLive();
+});
+
+// ------------------------------------------------------------ global timeline
+
+let allEvents = [];
+let allDayValue = "";
+
+function laneMarks(events, width) {
+  return events
+    .map((ev) => {
+      const x = dayFraction(ev.at) * width;
+      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      return `<line data-key="${ev.camera_id}|${ev.name}" x1="${x}" y1="5" x2="${x}" y2="21"
+        stroke="${colour}" stroke-width="4" stroke-linecap="round" opacity="0.85"/>`;
+    })
+    .join("");
+}
+
+function drawAllLanes() {
+  const width = 1000;
+  const byCamera = new Map();
+  allEvents.forEach((ev) => {
+    if (!byCamera.has(ev.camera_id)) byCamera.set(ev.camera_id, []);
+    byCamera.get(ev.camera_id).push(ev);
+  });
+  // One lane per camera rather than one strip for everything: two cameras
+  // seeing the same car at the same moment would otherwise be one mark, and
+  // the question this view answers is which camera saw what, and when.
+  const lanes = [];
+  cameras.forEach((cam) => {
+    const events = byCamera.get(cam.id);
+    if (!events || !events.length) return;
+    const grid = [0, 3, 6, 9, 12, 15, 18, 21, 24]
+      .map((h) => `<line x1="${(h / 24) * width}" y1="2" x2="${(h / 24) * width}" y2="24"
+        stroke="var(--border)" stroke-width="1"/>`).join("");
+    lanes.push(`
+      <div class="lane">
+        <span class="who" title="${escapeHtml(cam.name)}">${escapeHtml(cam.name)}</span>
+        <span class="track">
+          <svg viewBox="0 0 ${width} 26" preserveAspectRatio="none">${grid}${laneMarks(events, width)}</svg>
+        </span>
+      </div>`);
+  });
+  $("#allLanes").innerHTML = lanes.join("");
+  const hours = [];
+  for (let h = 0; h <= 24; h += 3) hours.push(`<span>${String(h).padStart(2, "0")}:00</span>`);
+  $("#allHours").innerHTML = hours.join("");
+}
+
+function drawAllShots() {
+  const grid = $("#allShots");
+  grid.innerHTML = allEvents
+    .slice()
+    .reverse()
+    .slice(0, 400)
+    .map((ev) => {
+      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      return `<button class="shot" type="button" data-key="${ev.camera_id}|${ev.name}">
+        <img loading="lazy" src="/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}"
+             alt="${escapeHtml(ev.camera)} — ${ev.type}">
+        <span class="meta">
+          <span class="swatch" style="background:${colour}"></span>
+          <span class="when">${clockOf(ev.at)}</span>
+          <span>${escapeHtml(ev.camera)}</span>
+          <span class="score">${ev.type}</span>
+        </span>
+      </button>`;
+    })
+    .join("");
+  $("#allEmpty").hidden = allEvents.length > 0;
+}
+
+function showAllShot(key) {
+  const ev = allEvents.find((e) => `${e.camera_id}|${e.name}` === key);
+  if (!ev) return;
+  $("#allViewer").hidden = false;
+  $("#allImage").src = `/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}`;
+  const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+  $("#allCaption").innerHTML =
+    `<span class="swatch" style="background:${colour}"></span>` +
+    `${escapeHtml(ev.camera)} · ${ev.type} · ${clockOf(ev.at)} · ` +
+    `${Math.round(ev.score * 100)}% confident`;
+  $$("#allShots .shot").forEach((el) => el.classList.toggle("on", el.dataset.key === key));
+}
+
+async function loadAllDays() {
+  const info = await api("/api/events");
+  const days = info.days || [];
+  const select = $("#allDay");
+  select.innerHTML = days
+    .map((d) => `<option value="${d.day}">${d.day} — ${d.count} detection${d.count === 1 ? "" : "s"}</option>`)
+    .join("");
+  if (!days.length) {
+    allEvents = [];
+    allDayValue = "";
+    drawAllLanes();
+    drawAllShots();
+    $("#allCount").innerHTML = "<span>nothing recorded yet</span>";
+    return;
+  }
+  if (!days.some((d) => d.day === allDayValue)) allDayValue = days[0].day;
+  select.value = allDayValue;
+  await loadAllEvents();
+}
+
+async function loadAllEvents() {
+  if (!allDayValue) return;
+  const data = await api(`/api/events/${allDayValue}`);
+  allEvents = data.events || [];
+  const perCamera = new Set(allEvents.map((e) => e.camera_id)).size;
+  $("#allCount").innerHTML =
+    `<span>${allEvents.length} across ${perCamera} camera${perCamera === 1 ? "" : "s"}</span>`;
+  $("#allViewer").hidden = true;
+  drawAllLanes();
+  drawAllShots();
+}
+
+$("#allDay").addEventListener("change", (event) => {
+  allDayValue = event.target.value;
+  loadAllEvents().catch((err) => toast(err.message, true));
+});
+$("#allShots").addEventListener("click", (event) => {
+  const shot = event.target.closest(".shot");
+  if (shot) showAllShot(shot.dataset.key);
+});
+$("#allLanes").addEventListener("click", (event) => {
+  const mark = event.target.closest("line[data-key]");
+  if (mark) showAllShot(mark.dataset.key);
+});
+
 // ------------------------------------------------------------------- settings
 
 function humanBytes(n) {
@@ -1116,6 +1429,14 @@ function flowBlock(cam) {
 }
 
 function render() {
+  // The live grid follows the same camera list, but only rebuilds when the set
+  // of tiles would change: redrawing it on every poll would restart every
+  // stream a few times a minute.
+  if (currentView === "live") {
+    const shown = $$("#liveGrid .tile").map((t) => t.dataset.id).join(",");
+    if (shown !== liveCameras().map((c) => c.id).join(",")) startLive();
+  }
+
   const list = $("#list");
   if (!cameras.length) {
     list.innerHTML = '<div class="empty">No cameras yet. Add an RTSP stream to publish it as an ONVIF device.</div>';

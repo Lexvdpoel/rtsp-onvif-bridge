@@ -383,6 +383,37 @@ Whether Protect acts on the *smart* topics — person, vehicle, animal — rathe
 than treating everything as plain motion is not something this project can
 confirm. The motion topics are the ones with a working precedent.
 
+### The three views
+
+The header switches between them.
+
+**Cameras** is the list: one card per camera, with its addresses, throughput and
+controls.
+
+**Live** is a grid of every running camera, sized to the window -- the column
+count follows the width, and the tile size decides how many fit. Two things to
+know about the quality setting, because it costs real CPU:
+
+* **Low** reads each camera's sub stream. One small encoder per tile.
+* **High** reads the main stream. One full-resolution encoder per tile, so a
+  grid of eight is eight of them on the host at once.
+
+The streams stop when you leave the view, and when the tab goes to the
+background. That is not tidiness: a tile left connected is an encoder left
+running, and nothing in the interface would show it.
+
+Video reaches the browser as MJPEG. HLS would need a JavaScript player, since
+only Safari plays it natively, and this page deliberately loads nothing from the
+internet so it works on a machine that has none. WebRTC would need signalling
+and a spread of UDP ports. An `<img>` pointed at a multipart stream needs
+neither and works everywhere -- at the cost of bandwidth, which is why the frame
+rate is a handful per second rather than the full stream.
+
+**Timeline** is every camera's detections on one day, one lane per camera. One
+strip for all of them would merge two cameras seeing the same car into a single
+mark, and the question this view answers is which camera saw what, and when.
+Click a mark or a still to enlarge it.
+
 ### The detection timeline
 
 Every detection saves a still, and the **Detections** button on a camera card
@@ -593,6 +624,7 @@ environment (or in `docker-compose.yml`, then restart the cameras).
 | [app/common/clips.py](app/common/clips.py) | where stills live, and how their names carry their metadata |
 | [app/controller/clip_store.py](app/controller/clip_store.py) | lists and serves stills, and prunes them to the budget |
 | [app/controller/settings.py](app/controller/settings.py) | settings that apply to the whole bridge |
+| [app/controller/mjpeg.py](app/controller/mjpeg.py) | the live grid's video, as multipart JPEG |
 | [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
 | [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
 | [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |

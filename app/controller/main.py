@@ -8,12 +8,13 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
+    StreamingResponse,
 )
 from starlette.concurrency import run_in_threadpool
 
@@ -22,6 +23,7 @@ from . import backup as backup_mod
 from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
 from .clip_store import GIGABYTE, ClipStore
 from .docker_mgr import DockerError, DockerManager
+from . import mjpeg
 from .hwdetect import HardwareDetector, summarize
 from .settings import SettingsStore
 from .store import CameraStore
@@ -568,6 +570,81 @@ def camera_event_image(cam_id: str, day: str, name: str):
     # browser may keep it as long as it likes.
     return FileResponse(path, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=31536000"})
+
+
+# ------------------------------------------------------------------ live view
+
+
+def _live_source(cam: dict, quality: str) -> str:
+    """The relay path to read, on the camera's own address.
+
+    "low" is the camera's sub stream where it has one: a grid of a dozen tiles
+    wants the small picture, and asking every camera for its full resolution to
+    show it at 300 pixels wide is the quickest way to run a host out of CPU.
+    """
+    runtime = _runtime_state(cam["id"])
+    ip = runtime.get("ip")
+    if not ip:
+        return ""
+    path = "sub" if quality == "low" and cam.get("source_url_sub") else "main"
+    return f"rtsp://{ip}:{cam.get('rtsp_port', 554)}/{path}"
+
+
+@app.get("/api/cameras/{cam_id}/live.mjpeg")
+def camera_live(cam_id: str, quality: str = "low", fps: int = 6, width: int = 640):
+    cam = _get_or_404(cam_id)
+    source = _live_source(cam, quality)
+    if not source:
+        raise HTTPException(status_code=503, detail="This camera has no address yet")
+    if not mjpeg.available():
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed")
+    return StreamingResponse(
+        mjpeg.frames(source, mjpeg.clamp_fps(fps), mjpeg.clamp_width(width)),
+        media_type=mjpeg.CONTENT_TYPE,
+        # A live stream that a proxy decides to cache is a still picture that
+        # never changes, which is a confusing way to find out about a proxy.
+        headers={"Cache-Control": "no-store, no-cache", "Pragma": "no-cache"},
+    )
+
+
+@app.get("/api/cameras/{cam_id}/live.jpg")
+def camera_live_still(cam_id: str, quality: str = "low", width: int = 640):
+    """One frame, for a tile to show before its stream has started."""
+    cam = _get_or_404(cam_id)
+    source = _live_source(cam, quality)
+    image = mjpeg.still_frame(source, mjpeg.clamp_width(width)) if source else b""
+    if not image:
+        raise HTTPException(status_code=503, detail="No frame available")
+    return Response(content=image, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+# ------------------------------------------------------------- global timeline
+
+
+@app.get("/api/events")
+def all_event_days():
+    """Every day any camera has stills for, merged, newest first."""
+    totals: dict = {}
+    for cam in store.list():
+        for entry in clip_store.days(cam["id"]):
+            totals[entry["day"]] = totals.get(entry["day"], 0) + entry["count"]
+    days = [{"day": day, "count": count} for day, count in totals.items()]
+    days.sort(key=lambda d: d["day"], reverse=True)
+    return {"days": days, "usage": clip_store.last_prune or {}}
+
+
+@app.get("/api/events/{day}")
+def all_events(day: str):
+    """One day across every camera, in one sequence, oldest first."""
+    out = []
+    for cam in store.list():
+        for event in clip_store.events(cam["id"], day):
+            event["camera_id"] = cam["id"]
+            event["camera"] = cam["name"]
+            out.append(event)
+    out.sort(key=lambda e: e["at"])
+    return {"day": day, "events": out}
 
 
 # --------------------------------------------------------------------- settings
