@@ -959,7 +959,11 @@ $("#views").addEventListener("click", (event) => {
 let liveOn = false;
 
 function liveCameras() {
-  return cameras.filter((c) => c.enabled && (c.runtime || {}).ip);
+  // Every enabled camera gets a tile, address or not. Filtering on the address
+  // made the grid flap: a state file that is momentarily unreadable drops a
+  // camera from the list, the tile set changes, and every stream on the page
+  // restarts -- twice, because it comes back on the next poll.
+  return cameras.filter((c) => c.enabled);
 }
 
 function renderLiveGrid() {
@@ -989,32 +993,61 @@ function attachStreams() {
   const fps = quality === "high" ? 6 : 4;
   $$("#liveGrid img").forEach((img) => {
     const id = img.dataset.id;
-    const over = img.parentElement.querySelector('[data-role="over"]');
-    img.onload = () => { if (over) over.textContent = ""; };
+    const tile = img.parentElement;
+    const over = tile.querySelector('[data-role="over"]');
+    const cam = cameras.find((c) => c.id === id) || {};
+    if (!(cam.runtime || {}).ip) {
+      if (over) over.textContent = "waiting for an address";
+      return;
+    }
+    // A stream that opens and then ends produces no error event in some
+    // browsers, so a tile would sit on "connecting" for ever. Give it a
+    // deadline and say so, rather than looking busy.
+    const deadline = setTimeout(() => {
+      if (!tile.classList.contains("playing")) {
+        tile.classList.add("down");
+        if (over) over.textContent = "no picture — see the controller log";
+      }
+    }, 12000);
+    img.onload = () => {
+      clearTimeout(deadline);
+      tile.classList.add("playing");
+      tile.classList.remove("down");
+      if (over) over.textContent = "";
+    };
     img.onerror = () => {
-      img.parentElement.classList.add("down");
-      if (over) over.textContent = "no picture";
+      clearTimeout(deadline);
+      tile.classList.add("down");
+      if (over) over.textContent = "no picture — see the controller log";
     };
     // The timestamp stops a browser reusing a connection it already has, which
     // would otherwise show the previous quality after switching.
     img.src = `/api/cameras/${id}/live.mjpeg?quality=${quality}&fps=${fps}`
       + `&width=${width}&t=${Date.now()}`;
   });
+  const withAddress = liveCameras().filter((c) => (c.runtime || {}).ip).length;
   $("#liveNote").innerHTML =
-    `<span>${liveCameras().length} live · ${quality === "high" ? "main" : "sub"} stream</span>`;
+    `<span>${withAddress} live · ${quality === "high" ? "main" : "sub"} stream</span>`;
 }
 
 function startLive() {
   liveOn = true;
+  // renderLiveGrid attaches the streams itself once liveOn is set; calling
+  // attachStreams again here would open a second connection per tile and leave
+  // the first one running on the host.
   renderLiveGrid();
-  attachStreams();
 }
 
 function stopLive() {
   liveOn = false;
   // Clearing src is what actually closes the connection; removing the element
   // alone leaves some browsers holding it open.
-  $$("#liveGrid img").forEach((img) => { img.src = ""; });
+  $$("#liveGrid img").forEach((img) => {
+    img.onload = null;
+    img.onerror = null;
+    img.removeAttribute("src");
+  });
+  $$("#liveGrid .tile").forEach((t) => t.classList.remove("playing", "down"));
   $("#liveNote").innerHTML = "<span>paused</span>";
 }
 

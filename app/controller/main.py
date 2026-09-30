@@ -599,7 +599,8 @@ def camera_live(cam_id: str, quality: str = "low", fps: int = 6, width: int = 64
     if not mjpeg.available():
         raise HTTPException(status_code=503, detail="ffmpeg is not installed")
     return StreamingResponse(
-        mjpeg.frames(source, mjpeg.clamp_fps(fps), mjpeg.clamp_width(width)),
+        mjpeg.frames(source, mjpeg.clamp_fps(fps), mjpeg.clamp_width(width),
+                     label=cam["name"]),
         media_type=mjpeg.CONTENT_TYPE,
         # A live stream that a proxy decides to cache is a still picture that
         # never changes, which is a confusing way to find out about a proxy.

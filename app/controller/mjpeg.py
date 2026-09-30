@@ -74,23 +74,33 @@ def available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def frames(source_url: str, fps: int = 6, width: int = 640):
+def frames(source_url: str, fps: int = 6, width: int = 640, label: str = ""):
     """Yield multipart chunks until the client goes away.
 
     ffmpeg's own mpjpeg muxer writes the boundaries and headers, so this only
     has to move bytes and make sure the process dies with the connection. A
     viewer who closes the tab must not leave an encoder running for ever.
+
+    ffmpeg's stderr is kept rather than discarded. A stream that cannot be
+    opened still answers 200 -- the headers go out before the first frame is
+    asked for -- so without the error the tile says "connecting" for ever and
+    nothing anywhere says why.
     """
     proc = subprocess.Popen(
         command(source_url, fps, width),
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
+    who = label or source_url
+    sent = 0
     try:
         while True:
             chunk = proc.stdout.read(32768)
             if not chunk:
+                if not sent:
+                    _report_failure(who, proc)
                 return
+            sent += len(chunk)
             yield chunk
     finally:
         # Reached when the generator is closed, which Starlette does as soon as
@@ -100,11 +110,32 @@ def frames(source_url: str, fps: int = 6, width: int = 640):
             proc.wait(timeout=5)
         except Exception:  # noqa: BLE001 - it is going away either way
             pass
-        if proc.stdout:
-            try:
-                proc.stdout.close()
-            except OSError:
-                pass
+        for stream in (proc.stdout, proc.stderr):
+            if stream:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+def _report_failure(who: str, proc: subprocess.Popen):
+    """Say why a stream produced nothing, in the words ffmpeg used."""
+    detail = ""
+    try:
+        detail = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    first = detail.splitlines()[0] if detail else "no output and no error"
+    print(f"[live] no picture from {who}: {first}")
+    if "Connection timed out" in detail or "No route to host" in detail:
+        # Worth spelling out: the cameras are on a macvlan network, and a
+        # container that is not on it cannot reach them however right the
+        # address looks. Nothing in the address or the log would hint at it.
+        print(
+            "[live] the controller cannot reach this camera over the network. "
+            "Cameras sit on the macvlan network, which a container on Docker's "
+            "bridge cannot route to. See LIVE_VIEW in the README."
+        )
 
 
 def still_frame(source_url: str, width: int = 640) -> bytes:

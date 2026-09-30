@@ -409,6 +409,36 @@ and a spread of UDP ports. An `<img>` pointed at a multipart stream needs
 neither and works everywhere -- at the cost of bandwidth, which is why the frame
 rate is a handful per second rather than the full stream.
 
+<a id="live_view"></a>
+**If every tile says "no picture":** the controller has to be able to reach the
+cameras over the network to read their streams, and that is not a given. The
+cameras sit on a **macvlan** network, and a container on Docker's ordinary
+bridge cannot route to macvlan children on the same host — traffic leaves by the
+physical interface and never comes back. Nothing about the address looks wrong,
+which is what makes it confusing.
+
+Everything else in the interface keeps working, because it does not go over the
+network: the status, the throughput and the detections are all read from files
+the cameras write into the shared volume.
+
+The controller log says which it is:
+
+```
+[live] no picture from Loods 3: Connection to tcp://10.51.100.104:554 failed: Connection timed out
+[live] the controller cannot reach this camera over the network. ...
+```
+
+One command settles it:
+
+```
+docker exec onvif-bridge-controller ffprobe -v error -rtsp_transport tcp \
+  -i rtsp://<camera ip>:554/main -show_entries stream=codec_name -of csv
+```
+
+A codec name back means the path is fine and the fault is elsewhere. A timeout
+means the controller cannot get there, and the live view cannot work from inside
+that container however it is written.
+
 **Timeline** is every camera's detections on one day, on a single track.
 
 Marks that would land on top of each other are drawn as one, a little thicker,
