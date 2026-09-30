@@ -1003,12 +1003,15 @@ function attachStreams() {
     // A stream that opens and then ends produces no error event in some
     // browsers, so a tile would sit on "connecting" for ever. Give it a
     // deadline and say so, rather than looking busy.
+    // The camera only starts encoding once the controller asks, so the first
+    // frame is a second or two out. Long enough not to accuse a camera that is
+    // merely starting, short enough to answer the question.
     const deadline = setTimeout(() => {
       if (!tile.classList.contains("playing")) {
         tile.classList.add("down");
         if (over) over.textContent = "no picture — see the controller log";
       }
-    }, 12000);
+    }, 15000);
     img.onload = () => {
       clearTimeout(deadline);
       tile.classList.add("playing");

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from . import (
     detect as detect_mod,
     events as events_mod,
+    live as live_mod,
     mediamtx,
     net,
     probe as probe_mod,
@@ -395,7 +396,19 @@ def main() -> int:
         collector = StatsCollector()
         collector.start()
 
-    # 5. object detection --------------------------------------------------
+    # 5. live view ---------------------------------------------------------
+    # Writes frames into the shared volume while the web interface asks for
+    # them, and nothing at all when it does not.
+    live = None
+    if cfg.proxy:
+        live = live_mod.LiveWriter(
+            cfg.id, _env("STATE_DIR", "/state"),
+            f"rtsp://127.0.0.1:{cfg.rtsp_port}/main",
+            f"rtsp://127.0.0.1:{cfg.rtsp_port}/sub" if cfg.source_url_sub else "",
+        )
+        live.start()
+
+    # 6. object detection --------------------------------------------------
     detector = None
     recorder = None
     if cfg.detect:
@@ -475,6 +488,8 @@ def main() -> int:
         detector.stop()
     if recorder is not None:
         recorder.stop()
+    if live is not None:
+        live.stop()
     events.stop()
     if collector is not None:
         collector.stop()

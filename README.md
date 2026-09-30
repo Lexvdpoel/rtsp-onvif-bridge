@@ -406,38 +406,45 @@ Video reaches the browser as MJPEG. HLS would need a JavaScript player, since
 only Safari plays it natively, and this page deliberately loads nothing from the
 internet so it works on a machine that has none. WebRTC would need signalling
 and a spread of UDP ports. An `<img>` pointed at a multipart stream needs
-neither and works everywhere -- at the cost of bandwidth, which is why the frame
+neither and works everywhere — at the cost of bandwidth, which is why the frame
 rate is a handful per second rather than the full stream.
 
 <a id="live_view"></a>
-**If every tile says "no picture":** the controller has to be able to reach the
-cameras over the network to read their streams, and that is not a given. The
-cameras sit on a **macvlan** network, and a container on Docker's ordinary
+
+#### How the frames get there
+
+The browser only ever talks to the controller. Nothing on the page reaches a
+camera directly, which also happens to be the only arrangement that works: the
+cameras are on a **macvlan** network, and a container on Docker's ordinary
 bridge cannot route to macvlan children on the same host — traffic leaves by the
-physical interface and never comes back. Nothing about the address looks wrong,
+physical interface and never comes back. The address looks perfectly reachable,
 which is what makes it confusing.
 
-Everything else in the interface keeps working, because it does not go over the
-network: the status, the throughput and the detections are all read from files
-the cameras write into the shared volume.
+So the two do not talk over the network at all. They talk through the volume
+they already share:
 
-The controller log says which it is:
+1. A browser opens a tile. The controller writes `state/live/<id>.want` saying
+   which quality, frame rate and width, and keeps rewriting it while the tile is
+   open.
+2. The camera notices within a second, starts one encoder, and writes each frame
+   to `state/live/<id>.jpg` — to a temporary name and then moved into place, so
+   the controller reads a whole picture or the previous one, never half of each.
+3. The controller reads those frames and hands them to the browser as multipart
+   JPEG.
+4. A few seconds after the last request, the camera stops encoding and removes
+   the frame.
+
+Nothing encodes while nobody is watching. That matters on a host already
+relaying three streams and running three detectors: an always-on encoder per
+camera would be a permanent cost for an occasional look.
+
+**If a tile says "no picture"**, the camera's own log says why — it is the one
+running ffmpeg:
 
 ```
-[live] no picture from Loods 3: Connection to tcp://10.51.100.104:554 failed: Connection timed out
-[live] the controller cannot reach this camera over the network. ...
+[live] someone is watching: low stream at 4 fps, 640px
+[live] no frames from rtsp://127.0.0.1:554/sub: <what ffmpeg said>
 ```
-
-One command settles it:
-
-```
-docker exec onvif-bridge-controller ffprobe -v error -rtsp_transport tcp \
-  -i rtsp://<camera ip>:554/main -show_entries stream=codec_name -of csv
-```
-
-A codec name back means the path is fine and the fault is elsewhere. A timeout
-means the controller cannot get there, and the live view cannot work from inside
-that container however it is written.
 
 **Timeline** is every camera's detections on one day, on a single track.
 
@@ -666,7 +673,8 @@ environment (or in `docker-compose.yml`, then restart the cameras).
 | [app/common/clips.py](app/common/clips.py) | where stills live, and how their names carry their metadata |
 | [app/controller/clip_store.py](app/controller/clip_store.py) | lists and serves stills, and prunes them to the budget |
 | [app/controller/settings.py](app/controller/settings.py) | settings that apply to the whole bridge |
-| [app/controller/mjpeg.py](app/controller/mjpeg.py) | the live grid's video, as multipart JPEG |
+| [app/common/mjpeg.py](app/common/mjpeg.py) | the live view: the request handshake, the encoder and the multipart framing |
+| [app/camera/live.py](app/camera/live.py) | writes live frames into the shared volume while someone watches |
 | [app/camera/detect.py](app/camera/detect.py) | object detection on the sub stream |
 | [app/common/models.py](app/common/models.py) | camera model, MAC generation, validation |
 | [tools/check_ui.py](tools/check_ui.py) | checks the web UI's inline script |

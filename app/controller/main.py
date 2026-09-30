@@ -23,7 +23,7 @@ from . import backup as backup_mod
 from .auth import COOKIE_NAME, SESSION_DAYS, AuthStore
 from .clip_store import GIGABYTE, ClipStore
 from .docker_mgr import DockerError, DockerManager
-from . import mjpeg
+from ..common import mjpeg
 from .hwdetect import HardwareDetector, summarize
 from .settings import SettingsStore
 from .store import CameraStore
@@ -575,32 +575,26 @@ def camera_event_image(cam_id: str, day: str, name: str):
 # ------------------------------------------------------------------ live view
 
 
-def _live_source(cam: dict, quality: str) -> str:
-    """The relay path to read, on the camera's own address.
-
-    "low" is the camera's sub stream where it has one: a grid of a dozen tiles
-    wants the small picture, and asking every camera for its full resolution to
-    show it at 300 pixels wide is the quickest way to run a host out of CPU.
-    """
+def _camera_is_up(cam: dict) -> bool:
     runtime = _runtime_state(cam["id"])
-    ip = runtime.get("ip")
-    if not ip:
-        return ""
-    path = "sub" if quality == "low" and cam.get("source_url_sub") else "main"
-    return f"rtsp://{ip}:{cam.get('rtsp_port', 554)}/{path}"
+    return bool(runtime.get("ip")) and not runtime.get("stale")
 
 
 @app.get("/api/cameras/{cam_id}/live.mjpeg")
 def camera_live(cam_id: str, quality: str = "low", fps: int = 6, width: int = 640):
+    """A live view, read from the volume the camera writes it into.
+
+    Not read from the camera over the network: the cameras are on a macvlan
+    network, and this container cannot route to them however right the address
+    looks. The browser only ever talks to the controller, which is also the
+    point -- nothing on the page reaches past it.
+    """
     cam = _get_or_404(cam_id)
-    source = _live_source(cam, quality)
-    if not source:
-        raise HTTPException(status_code=503, detail="This camera has no address yet")
-    if not mjpeg.available():
-        raise HTTPException(status_code=503, detail="ffmpeg is not installed")
+    if not _camera_is_up(cam):
+        raise HTTPException(status_code=503, detail="This camera is not running")
     return StreamingResponse(
-        mjpeg.frames(source, mjpeg.clamp_fps(fps), mjpeg.clamp_width(width),
-                     label=cam["name"]),
+        mjpeg.stream_from_file(STATE_DIR, cam_id, quality,
+                               mjpeg.clamp_fps(fps), mjpeg.clamp_width(width)),
         media_type=mjpeg.CONTENT_TYPE,
         # A live stream that a proxy decides to cache is a still picture that
         # never changes, which is a confusing way to find out about a proxy.
@@ -610,14 +604,24 @@ def camera_live(cam_id: str, quality: str = "low", fps: int = 6, width: int = 64
 
 @app.get("/api/cameras/{cam_id}/live.jpg")
 def camera_live_still(cam_id: str, quality: str = "low", width: int = 640):
-    """One frame, for a tile to show before its stream has started."""
+    """The most recent frame, for a tile to show while its stream starts."""
     cam = _get_or_404(cam_id)
-    source = _live_source(cam, quality)
-    image = mjpeg.still_frame(source, mjpeg.clamp_width(width)) if source else b""
-    if not image:
-        raise HTTPException(status_code=503, detail="No frame available")
-    return Response(content=image, media_type="image/jpeg",
-                    headers={"Cache-Control": "no-store"})
+    # Asking is what makes the camera start writing, so a still works even when
+    # nothing has been watching.
+    mjpeg.ask_for(STATE_DIR, cam_id, quality, 4, mjpeg.clamp_width(width))
+    path = mjpeg.frame_path(STATE_DIR, cam_id)
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        try:
+            with open(path, "rb") as fh:
+                image = fh.read()
+            if image.startswith(mjpeg.JPEG_START):
+                return Response(content=image, media_type="image/jpeg",
+                                headers={"Cache-Control": "no-store"})
+        except OSError:
+            pass
+        time.sleep(0.25)
+    raise HTTPException(status_code=503, detail="No frame available")
 
 
 # ------------------------------------------------------------- global timeline
