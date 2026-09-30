@@ -228,16 +228,31 @@ class DockerManager:
         except NotFound:
             return None
 
+    def current_image_id(self) -> str:
+        """The id of the image cameras would be created from right now."""
+        try:
+            return self.client.images.get(self.image).id
+        except (ImageNotFound, APIError):
+            return ""
+
     def status(self, cam: dict) -> dict:
         container = self._container(cam)
         if container is None:
             return {"exists": False, "state": "absent", "container": ""}
+        # A rebuilt image does not reach a running container: it keeps the one
+        # it was created from until something recreates it. That is invisible
+        # from the outside and has cost real time -- a fix that was built,
+        # pushed and installed, and then did not appear to work because the
+        # camera was still running last week's code.
+        running_image = container.attrs.get("Image", "")
+        current = self.current_image_id()
         return {
             "exists": True,
             "state": container.status,
             "container": container.name,
             "started_at": container.attrs.get("State", {}).get("StartedAt", ""),
             "restarts": container.attrs.get("RestartCount", 0),
+            "stale_image": bool(current and running_image and running_image != current),
         }
 
     def create(self, cam: dict):

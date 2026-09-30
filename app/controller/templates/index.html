@@ -895,6 +895,10 @@ function cameraHealth(cam) {
   if (docker.state !== "running") return { cls: "err", label: docker.state || "absent" };
   if (runtime.status === "error") return { cls: "err", label: runtime.message || "Error" };
   if (runtime.stale || !runtime.ip) return { cls: "warn", label: runtime.status || "starting" };
+  // A container keeps the image it was created from. After a rebuild it is
+  // still running the old code, which looks exactly like the new code not
+  // working -- so it says so rather than leaving you to wonder.
+  if (docker.stale_image) return { cls: "warn", label: "restart to update" };
   return { cls: "ok", label: "Running" };
 }
 
@@ -957,6 +961,14 @@ $("#views").addEventListener("click", (event) => {
 // ------------------------------------------------------------------ live grid
 
 let liveOn = false;
+let liveAttachedAt = 0;
+let liveAttachedTo = "";
+
+function tileKey(list) {
+  // Order-independent: a list that came back in a different order is the same
+  // set of tiles, and rebuilding for that would restart every stream.
+  return list.map((c) => c.id).sort().join(",");
+}
 
 function liveCameras() {
   // Every enabled camera gets a tile, address or not. Filtering on the address
@@ -991,6 +1003,8 @@ function attachStreams() {
   const quality = $("#liveQuality").value;
   const width = quality === "high" ? 960 : 640;
   const fps = quality === "high" ? 6 : 4;
+  liveAttachedAt = Date.now();
+  liveAttachedTo = tileKey(liveCameras());
   $$("#liveGrid img").forEach((img) => {
     const id = img.dataset.id;
     const tile = img.parentElement;
@@ -1043,6 +1057,7 @@ function startLive() {
 
 function stopLive() {
   liveOn = false;
+  liveAttachedTo = "";
   // Clearing src is what actually closes the connection; removing the element
   // alone leaves some browsers holding it open.
   $$("#liveGrid img").forEach((img) => {
@@ -1552,9 +1567,14 @@ function render() {
   // The live grid follows the same camera list, but only rebuilds when the set
   // of tiles would change: redrawing it on every poll would restart every
   // stream a few times a minute.
-  if (currentView === "live") {
-    const shown = $$("#liveGrid .tile").map((t) => t.dataset.id).join(",");
-    if (shown !== liveCameras().map((c) => c.id).join(",")) startLive();
+  if (currentView === "live" && liveOn) {
+    // Rebuilt only when the set of tiles really changed, and never twice
+    // within a few seconds. Restarting every stream on the page is expensive
+    // enough that a mistake here is worse than a tile arriving late.
+    const wanted = tileKey(liveCameras());
+    if (wanted !== liveAttachedTo && Date.now() - liveAttachedAt > 5000) {
+      startLive();
+    }
   }
 
   const list = $("#list");
