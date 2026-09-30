@@ -55,7 +55,13 @@ DEFAULTS = {
     "snapshot_enabled": True,
     # On-camera object detection, run on the sub stream.
     "detect": False,
-    "detect_types": "person,vehicle,animal",
+    # What a new camera starts out looking for: everything a house actually
+    # sees. The model also knows train and bear; both stay available to tick,
+    # but neither happens at a home, and an unticked class is one less way to
+    # raise a false alarm -- a long lorry at the wrong angle is exactly what a
+    # model mistakes for a train.
+    "detect_types": ("person,bicycle,car,motorcycle,bus,truck,boat,"
+                     "bird,cat,dog,horse,sheep,cow"),
     # Which network to run. "fast" is YOLOX-Tiny at 416px; "accurate" is
     # YOLOX-S at 640, about four times the work for a better answer on
     # small and distant things.

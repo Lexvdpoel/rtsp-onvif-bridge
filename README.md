@@ -333,8 +333,15 @@ sees rather than only its kind:
 | animal | bird, cat, dog, horse, sheep, cow, bear |
 
 Pick any of them, or a kind to take all of it. `person,vehicle,animal` — what
-every camera configured before this had — still means everything, so nothing
-had to be reselected.
+every camera configured before fine classes had — still means everything, so
+nothing had to be reselected.
+
+A new camera starts with the thirteen a house actually sees: everything above
+except **train** and **bear**. Both stay on the list to tick, because a camera
+that does face a level crossing is not this project's to rule out — they are
+simply not on to begin with, and an unticked class is one less way to raise a
+false alarm. A long lorry at the wrong angle is exactly what a model mistakes
+for a train.
 
 Every detection carries both: the class for you, and the kind for your NVR,
 whose event filter understands person, vehicle and animal and nothing else. The
