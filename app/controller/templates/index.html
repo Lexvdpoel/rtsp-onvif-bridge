@@ -224,8 +224,7 @@
   .tip .trow.more { color: var(--muted); font-style: italic; }
   /* Everything hiding behind one mark, laid out side by side. */
   .strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-  .strip { scroll-behavior: smooth; }
-  .strip figure { margin: 0; flex: 0 0 auto; width: min(340px, 72vw);
+  .strip figure { margin: 0; flex: 0 0 auto; width: min(340px, 72vw); cursor: zoom-in;
     border-radius: 8px; outline: 2px solid transparent; outline-offset: 2px; }
   .strip figure.on { outline-color: var(--accent); }
   .strip img { display: block; width: 100%; border-radius: 8px; background: var(--bg); }
@@ -262,6 +261,34 @@
   .viewer img { display: block; width: 100%; border-radius: 8px; background: var(--bg); }
   .viewer .cap { font-size: 12px; color: var(--muted); margin-top: 6px;
     display: flex; align-items: center; gap: 6px; }
+  /* ---- lightbox ---- */
+  #lightbox {
+    position: fixed; inset: 0; margin: 0;
+    width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh;
+    border: 0; padding: 0; background: rgba(0, 0, 0, .92);
+    display: none; align-items: center; justify-content: center; gap: 8px;
+  }
+  #lightbox[open] { display: flex; }
+  #lightbox::backdrop { background: rgba(0, 0, 0, .92); }
+  .lb-body { display: flex; flex-direction: column; align-items: center;
+    gap: 10px; min-width: 0; }
+  /* Shrink-wraps the picture so the outline drawn over it stays on it. */
+  #lightbox .framed { display: inline-block; width: auto; }
+  #lbImage { display: block; width: auto; height: auto;
+    max-width: min(92vw, 1800px); max-height: 84vh; border-radius: 6px; }
+  #lightbox .cap { color: #fff; font-size: 13px; opacity: .9;
+    display: flex; align-items: center; gap: 8px; }
+  #lightbox .nav, #lightbox .lb-close {
+    background: rgba(255, 255, 255, .1); border: 0; color: #fff;
+    border-radius: 999px; cursor: pointer; flex: none;
+  }
+  #lightbox .nav { font-size: 30px; line-height: 1; width: 48px; height: 72px; }
+  #lightbox .nav:hover, #lightbox .lb-close:hover { background: rgba(255, 255, 255, .22); }
+  #lightbox .nav:disabled { opacity: .25; cursor: default; }
+  #lightbox .lb-close { position: absolute; top: 14px; right: 16px;
+    width: 38px; height: 38px; font-size: 22px; line-height: 1; }
+  @media (max-width: 620px) { #lightbox .nav { width: 38px; height: 56px; } }
+
   .usage-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
   .usage-bar > div { height: 100%; background: var(--accent); }
 
@@ -743,6 +770,18 @@
     <button type="button" id="refreshLogs">Refresh</button>
     <button type="button" class="primary" id="closeLogs">Close</button>
   </div>
+</dialog>
+
+<dialog id="lightbox">
+  <button type="button" class="nav" id="lbPrev" title="Previous detection (←)">&lsaquo;</button>
+  <div class="lb-body">
+    <span class="framed" id="lbFrame">
+      <img id="lbImage" alt="">
+    </span>
+    <div class="cap" id="lbCaption"></div>
+  </div>
+  <button type="button" class="nav next" id="lbNext" title="Next detection (→)">&rsaquo;</button>
+  <button type="button" class="lb-close" id="lbClose" title="Close (Esc)">&times;</button>
 </dialog>
 
 <dialog id="eventsDialog" style="width:min(980px,96vw)">
@@ -1374,6 +1413,10 @@ $("#allShots").addEventListener("click", (event) => {
   const shot = event.target.closest(".shot");
   if (shot) showAllShot(shot.dataset.key);
 });
+$("#allViewer").addEventListener("click", (event) => {
+  const figure = event.target.closest("figure[data-key]");
+  if (figure) openLightbox(allEvents, allUrlOf, figure.dataset.key);
+});
 
 // ------------------------------------------------------------------- settings
 
@@ -1608,6 +1651,63 @@ function shotsSideBySide(cluster, urlOf, focusKey) {
     .join("");
 }
 
+// ------------------------------------------------------------------ lightbox
+//
+// Walks the whole day rather than only the group that was opened: having got
+// this far into a picture, the next thing anyone wants is the one before or
+// after it, whichever mark they belonged to.
+
+let lightboxList = [];
+let lightboxAt = -1;
+let lightboxUrl = null;
+
+function openLightbox(list, urlOf, key) {
+  const index = list.findIndex((ev) => eventKey(ev) === key);
+  if (index < 0) return;
+  lightboxList = list;
+  lightboxUrl = urlOf;
+  showLightbox(index);
+  if (!$("#lightbox").open) $("#lightbox").showModal();
+}
+
+function showLightbox(index) {
+  if (index < 0 || index >= lightboxList.length) return;
+  lightboxAt = index;
+  const ev = lightboxList[index];
+  const frame = $("#lbFrame");
+  $("#lbImage").src = lightboxUrl(ev);
+  $("#lbImage").alt = `${ev.camera ? ev.camera + " — " : ""}${ev.type}`;
+  // The outline is rebuilt beside the image rather than left from the previous
+  // one, which would be drawn over a different picture for a moment.
+  frame.querySelectorAll("svg").forEach((el) => el.remove());
+  frame.insertAdjacentHTML("beforeend", boxOverlay(ev));
+  const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
+  $("#lbCaption").innerHTML =
+    `<span class="swatch" style="background:${colourOf(ev.type)}"></span>` +
+    `${who}${ev.type} · ${clockOf(ev.at)} · ${Math.round(ev.score * 100)}% · ` +
+    `${index + 1} of ${lightboxList.length}`;
+  $("#lbPrev").disabled = index === 0;
+  $("#lbNext").disabled = index === lightboxList.length - 1;
+}
+
+function stepLightbox(by) {
+  showLightbox(lightboxAt + by);
+}
+
+$("#lbPrev").addEventListener("click", () => stepLightbox(-1));
+$("#lbNext").addEventListener("click", () => stepLightbox(1));
+$("#lbClose").addEventListener("click", () => $("#lightbox").close());
+$("#lightbox").addEventListener("keydown", (event) => {
+  if (event.key === "ArrowLeft") stepLightbox(-1);
+  if (event.key === "ArrowRight") stepLightbox(1);
+});
+$("#lightbox").addEventListener("click", (event) => {
+  // Anywhere off the picture and the controls closes it, the way a lightbox
+  // is expected to behave.
+  if (event.target.closest("button, #lbImage")) return;
+  $("#lightbox").close();
+});
+
 function focusInStrip(viewer, key) {
   // Moved by hand rather than with scrollIntoView: that scrolls every ancestor
   // that can move, and the one thing this must not do is drag the page about
@@ -1622,7 +1722,10 @@ function focusInStrip(viewer, key) {
   const frame = strip.getBoundingClientRect();
   const middle = here.left - frame.left + strip.scrollLeft
     - (frame.width - here.width) / 2;
-  strip.scrollTo({ left: Math.max(0, middle), behavior: "smooth" });
+  // Instant, not animated. The strip was built a moment ago and has never
+  // been anywhere else, so sliding it from the left is watching a journey that
+  // did not happen.
+  strip.scrollLeft = Math.max(0, middle);
 }
 
 function clockOf(at) {
@@ -1755,6 +1858,10 @@ $("#closeEvents").addEventListener("click", () => $("#eventsDialog").close());
 $("#eventsShots").addEventListener("click", (event) => {
   const shot = event.target.closest(".shot");
   if (shot) showShot(shot.dataset.name);
+});
+$("#eventsViewer").addEventListener("click", (event) => {
+  const figure = event.target.closest("figure[data-key]");
+  if (figure) openLightbox(eventsList, shotUrl, figure.dataset.key);
 });
 
 function eventsText(cam) {

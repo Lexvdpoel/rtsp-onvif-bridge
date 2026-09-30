@@ -584,6 +584,15 @@ near right.
 Turn it off per camera with **Save a still per detection** if you only want the
 events.
 
+### Looking at one closely
+
+Clicking a still in the strip opens it full size, with the outline drawn over it
+and the arrows — or the left and right keys — stepping to the detection before
+and after. It walks the **whole day**, not only the group that was opened:
+having got this far into a picture, the next thing anyone wants is the one
+either side of it, whichever mark they came from. Escape or a click away from
+the picture closes it.
+
 ### Disk, and how it is kept in hand
 
 Under **Settings**, one budget covers every camera. The default is **10 GB**,
