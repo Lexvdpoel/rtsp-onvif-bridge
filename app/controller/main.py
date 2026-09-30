@@ -628,8 +628,10 @@ def camera_live_still(cam_id: str, quality: str = "low", width: int = 640):
     """The most recent frame, for a tile to show while its stream starts."""
     cam = _get_or_404(cam_id)
     # Asking is what makes the camera start writing, so a still works even when
-    # nothing has been watching.
-    mjpeg.ask_for(STATE_DIR, cam_id, quality, 4, mjpeg.clamp_width(width))
+    # nothing has been watching. Its own viewer name, so a still never lowers
+    # the quality a grid is already asking for.
+    viewer = "still" + cam_id[:8]
+    mjpeg.ask_for(STATE_DIR, cam_id, viewer, quality, 4, mjpeg.clamp_width(width))
     path = mjpeg.frame_path(STATE_DIR, cam_id)
     deadline = time.time() + 6
     while time.time() < deadline:
@@ -637,11 +639,13 @@ def camera_live_still(cam_id: str, quality: str = "low", width: int = 640):
             with open(path, "rb") as fh:
                 image = fh.read()
             if image.startswith(mjpeg.JPEG_START):
+                mjpeg.stop_asking(STATE_DIR, cam_id, viewer)
                 return Response(content=image, media_type="image/jpeg",
                                 headers={"Cache-Control": "no-store"})
         except OSError:
             pass
         time.sleep(0.25)
+    mjpeg.stop_asking(STATE_DIR, cam_id, viewer)
     raise HTTPException(status_code=503, detail="No frame available")
 
 

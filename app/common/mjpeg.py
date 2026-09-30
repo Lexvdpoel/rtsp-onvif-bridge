@@ -29,6 +29,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 
 BOUNDARY = "frameboundary"
 CONTENT_TYPE = f"multipart/x-mixed-replace; boundary={BOUNDARY}"
@@ -78,10 +79,18 @@ def frame_path(state_dir: str, cam_id: str) -> str:
     return os.path.join(live_dir(state_dir), f"{cam_id}.jpg")
 
 
-def ask_for(state_dir: str, cam_id: str, quality: str, fps: int, width: int):
-    """Tell the camera someone is watching. Cheap enough to call per frame."""
+def ask_for(state_dir: str, cam_id: str, viewer: str, quality: str,
+            fps: int, width: int):
+    """Tell the camera this viewer is watching, and what it wants.
+
+    One file per viewer rather than one per camera. They used to share a single
+    file, and two viewers wanting different things overwrote each other several
+    times a second -- the camera saw the quality change, restarted its encoder,
+    saw it change back, and the picture dropped to the other stream and back
+    again for as long as both were open.
+    """
     os.makedirs(live_dir(state_dir), exist_ok=True)
-    path = demand_path(state_dir, cam_id)
+    path = demand_path(state_dir, cam_id) + "." + _safe_viewer(viewer)
     tmp = f"{path}.tmp"
     try:
         with open(tmp, "w") as fh:
@@ -91,17 +100,58 @@ def ask_for(state_dir: str, cam_id: str, quality: str, fps: int, width: int):
         pass
 
 
-def wanted(state_dir: str, cam_id: str) -> dict | None:
-    """What is being asked for, or None when nobody is watching."""
-    path = demand_path(state_dir, cam_id)
+def stop_asking(state_dir: str, cam_id: str, viewer: str):
+    """Withdraw one viewer's request, rather than waiting for it to go stale."""
     try:
-        if time.time() - os.path.getmtime(path) > DEMAND_SECONDS:
-            return None
-        with open(path) as fh:
-            quality, fps, width = fh.read().split()
-    except (OSError, ValueError):
+        os.remove(demand_path(state_dir, cam_id) + "." + _safe_viewer(viewer))
+    except OSError:
+        pass
+
+
+def _safe_viewer(viewer: str) -> str:
+    keep = "".join(ch for ch in str(viewer) if ch.isalnum())
+    return keep[:32] or "anon"
+
+
+def wanted(state_dir: str, cam_id: str) -> dict | None:
+    """The most anyone is asking for, or None when nobody is watching.
+
+    The union rather than the last writer: with two people watching the same
+    camera at different qualities, serving the lower one would mean the person
+    who asked for detail does not get it. Encoding once at the higher setting
+    costs no more than encoding once at the lower one.
+    """
+    prefix = os.path.basename(demand_path(state_dir, cam_id)) + "."
+    directory = live_dir(state_dir)
+    now = time.time()
+    quality, fps, width = "", 0, 0
+    try:
+        names = os.listdir(directory)
+    except OSError:
         return None
-    return {"quality": quality, "fps": clamp_fps(fps), "width": clamp_width(width)}
+    for name in names:
+        if not name.startswith(prefix) or name.endswith(".tmp"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if now - os.path.getmtime(path) > DEMAND_SECONDS:
+                # Whoever asked has gone; tidy up rather than re-reading it for
+                # ever.
+                os.remove(path)
+                continue
+            with open(path) as fh:
+                asked, asked_fps, asked_width = fh.read().split()
+        except (OSError, ValueError):
+            continue
+        if asked == "high":
+            quality = "high"
+        elif not quality:
+            quality = asked
+        fps = max(fps, clamp_fps(asked_fps))
+        width = max(width, clamp_width(asked_width))
+    if not fps:
+        return None
+    return {"quality": quality or "low", "fps": fps, "width": width}
 
 
 # ------------------------------------------------------------------- encoding
@@ -170,33 +220,38 @@ def stream_from_file(state_dir: str, cam_id: str, quality: str, fps: int,
                      width: int, idle_timeout: float = 20.0):
     """Multipart chunks read from whatever the camera is writing.
 
-    Renews the request on the way round, so the camera keeps encoding for
-    exactly as long as a browser is attached and no longer.
+    Renews this viewer's request on the way round, so the camera keeps encoding
+    for exactly as long as a browser is attached, and withdraws it on the way
+    out rather than leaving it to go stale.
     """
+    viewer = uuid.uuid4().hex[:12]
     path = frame_path(state_dir, cam_id)
     interval = 1.0 / max(1, clamp_fps(fps))
     last_stamp = 0.0
     last_new = time.monotonic()
-    served = 0
-    while True:
-        ask_for(state_dir, cam_id, quality, fps, width)
-        try:
-            stamp = os.path.getmtime(path)
-        except OSError:
-            stamp = 0.0
-        if stamp and stamp != last_stamp:
+    try:
+        while True:
+            ask_for(state_dir, cam_id, viewer, quality, fps, width)
             try:
-                with open(path, "rb") as fh:
-                    jpeg = fh.read()
+                stamp = os.path.getmtime(path)
             except OSError:
-                jpeg = b""
-            if jpeg.startswith(JPEG_START):
-                last_stamp = stamp
-                last_new = time.monotonic()
-                served += 1
-                yield part(jpeg)
-        elif time.monotonic() - last_new > idle_timeout:
-            # Nothing has arrived for long enough that something is wrong.
-            # Ending the response is what makes the tile say so.
-            return
-        time.sleep(interval)
+                stamp = 0.0
+            if stamp and stamp != last_stamp:
+                try:
+                    with open(path, "rb") as fh:
+                        jpeg = fh.read()
+                except OSError:
+                    jpeg = b""
+                if jpeg.startswith(JPEG_START):
+                    last_stamp = stamp
+                    last_new = time.monotonic()
+                    yield part(jpeg)
+            elif time.monotonic() - last_new > idle_timeout:
+                # Nothing has arrived for long enough that something is wrong.
+                # Ending the response is what makes the tile say so.
+                return
+            time.sleep(interval)
+    finally:
+        # Reached when the browser goes away, which is the moment the camera
+        # should stop encoding for it rather than a few seconds later.
+        stop_asking(state_dir, cam_id, viewer)

@@ -149,9 +149,21 @@ class LiveWriter(threading.Thread):
             self.join(timeout=3)
         # The frame left behind is a picture from whenever this stopped, and a
         # tile showing it would be showing the past as the present.
-        for path in (mjpeg.frame_path(self.state_dir, self.cam_id),
-                     mjpeg.demand_path(self.state_dir, self.cam_id)):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        try:
+            os.remove(mjpeg.frame_path(self.state_dir, self.cam_id))
+        except OSError:
+            pass
+        # Every viewer's request too: they belong to a camera that is going
+        # away, and a leftover one would ask the next start to encode for
+        # nobody.
+        prefix = os.path.basename(mjpeg.demand_path(self.state_dir, self.cam_id))
+        directory = mjpeg.live_dir(self.state_dir)
+        try:
+            for name in os.listdir(directory):
+                if name.startswith(prefix):
+                    try:
+                        os.remove(os.path.join(directory, name))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
