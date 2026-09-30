@@ -216,6 +216,11 @@
   .tl-wrap { position: relative; margin-bottom: 4px; }
   .track-wrap { position: relative; }
   .track-svg { display: block; width: 100%; height: 56px; overflow: visible; cursor: pointer; }
+  /* Where the still you are looking at sits on the day. */
+  .track-svg .cursor, .tl .cursor {
+    stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 3 3;
+    vector-effect: non-scaling-stroke;
+  }
   .tip .trow.more { color: var(--muted); font-style: italic; }
   /* Everything hiding behind one mark, laid out side by side. */
   .strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
@@ -1303,13 +1308,15 @@ function allUrlOf(ev) {
 }
 
 function showAllCluster(cluster) {
-  $("#allViewer").hidden = false;
-  $("#allViewer").innerHTML =
-    `<div class="strip">${shotsSideBySide(cluster, allUrlOf)}</div>`;
+  const viewer = $("#allViewer");
+  viewer.hidden = false;
+  viewer.innerHTML = `<div class="strip">${shotsSideBySide(cluster, allUrlOf)}</div>`;
   const keys = new Set(cluster.events.map((e) => `${e.camera_id}|${e.name}`));
   $$("#allShots .shot").forEach((el) => el.classList.toggle("on", keys.has(el.dataset.key)));
+  markSelected("allTrack", allClusters, cluster);
   const first = $(`#allShots .shot[data-key="${cluster.events[0].camera_id}|${cluster.events[0].name}"]`);
   if (first) first.scrollIntoView({ block: "nearest" });
+  viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function showAllShot(key) {
@@ -1498,7 +1505,25 @@ function trackMarks(clusters, top, bottom) {
         <rect x="${cluster.x - 6}" y="${top - 4}" width="12" height="${span + 8}"
           fill="transparent"/></g>`;
     })
-    .join("");
+    .join("")
+    // Drawn last so it sits over the marks, and parked off the left until
+    // something is selected. Moved rather than redrawn, so picking a detection
+    // does not rebuild the whole track.
+    + `<line class="cursor" data-cursor x1="-20" y1="${top - 6}"
+         x2="-20" y2="${bottom + 6}"/>`;
+}
+
+function markSelected(svgId, clusters, cluster) {
+  const cursor = $(`#${svgId} [data-cursor]`);
+  if (!cursor) return;
+  const index = clusters.indexOf(cluster);
+  if (index < 0) {
+    cursor.setAttribute("x1", -20);
+    cursor.setAttribute("x2", -20);
+    return;
+  }
+  cursor.setAttribute("x1", cluster.x);
+  cursor.setAttribute("x2", cluster.x);
 }
 
 function clusterSummary(cluster) {
@@ -1629,13 +1654,19 @@ function drawShots() {
 }
 
 function showCluster(cluster) {
-  $("#eventsViewer").hidden = false;
-  $("#eventsViewer").innerHTML =
-    `<div class="strip">${shotsSideBySide(cluster, shotUrl)}</div>`;
+  const viewer = $("#eventsViewer");
+  viewer.hidden = false;
+  viewer.innerHTML = `<div class="strip">${shotsSideBySide(cluster, shotUrl)}</div>`;
   const names = new Set(cluster.events.map((e) => e.name));
   $$("#eventsShots .shot").forEach((el) => el.classList.toggle("on", names.has(el.dataset.name)));
+  markSelected("eventsTimeline", eventsClusters, cluster);
+  // The thumbnail first, inside its own scroller, then the picture: doing it
+  // the other way round leaves the page where the thumbnail was.
   const first = $(`#eventsShots .shot[data-name="${cluster.events[0].name}"]`);
   if (first) first.scrollIntoView({ block: "nearest" });
+  // Bring the picture into view rather than leaving it above the fold: the
+  // reason for clicking a thumbnail is to look at the larger one.
+  viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function showShot(name) {
