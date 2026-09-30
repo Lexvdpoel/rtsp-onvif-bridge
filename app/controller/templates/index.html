@@ -224,7 +224,10 @@
   .tip .trow.more { color: var(--muted); font-style: italic; }
   /* Everything hiding behind one mark, laid out side by side. */
   .strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-  .strip figure { margin: 0; flex: 0 0 auto; width: min(340px, 72vw); }
+  .strip { scroll-behavior: smooth; }
+  .strip figure { margin: 0; flex: 0 0 auto; width: min(340px, 72vw);
+    border-radius: 8px; outline: 2px solid transparent; outline-offset: 2px; }
+  .strip figure.on { outline-color: var(--accent); }
   .strip img { display: block; width: 100%; border-radius: 8px; background: var(--bg); }
   .strip figcaption { font-size: 12px; color: var(--muted); margin-top: 6px;
     display: flex; align-items: center; gap: 6px; }
@@ -1308,10 +1311,12 @@ function allUrlOf(ev) {
   return `/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}`;
 }
 
-function showAllCluster(cluster) {
+function showAllCluster(cluster, focusKey) {
   const viewer = $("#allViewer");
   viewer.hidden = false;
-  viewer.innerHTML = `<div class="strip">${shotsSideBySide(cluster, allUrlOf)}</div>`;
+  const focus = focusKey || eventKey(cluster.events[0]);
+  viewer.innerHTML = `<div class="strip">${shotsSideBySide(cluster, allUrlOf, focus)}</div>`;
+  focusInStrip(viewer, focus);
   const keys = new Set(cluster.events.map((e) => `${e.camera_id}|${e.name}`));
   $$("#allShots .shot").forEach((el) => el.classList.toggle("on", keys.has(el.dataset.key)));
   markSelected("allTrack", allClusters, cluster);
@@ -1321,9 +1326,10 @@ function showAllCluster(cluster) {
 }
 
 function showAllShot(key) {
-  const cluster = allClusters.find((c) =>
-    c.events.some((e) => `${e.camera_id}|${e.name}` === key));
-  if (cluster) showAllCluster(cluster);
+  const cluster = allClusters.find((c) => c.events.some((e) => eventKey(e) === key));
+  // The key is passed on so the strip opens on the one that was clicked rather
+  // than on whatever happens to be first in the group.
+  if (cluster) showAllCluster(cluster, key);
 }
 
 async function loadAllDays() {
@@ -1575,14 +1581,21 @@ function boxOverlay(ev) {
   </svg>`;
 }
 
-function shotsSideBySide(cluster, urlOf) {
+// One name for an event wherever it came from. A shared-timeline event carries
+// the camera it belongs to; a per-camera one does not need to.
+function eventKey(ev) {
+  return ev.camera_id ? `${ev.camera_id}|${ev.name}` : ev.name;
+}
+
+function shotsSideBySide(cluster, urlOf, focusKey) {
   // Everything in the group, side by side: the reason to click a cluster is to
   // see what the single mark was hiding.
   return cluster.events
     .map((ev) => {
       const colour = colourOf(ev.type);
       const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
-      return `<figure>
+      const key = eventKey(ev);
+      return `<figure data-key="${key}" class="${key === focusKey ? "on" : ""}">
         <span class="framed">
           <img src="${urlOf(ev)}" alt="${who}${ev.type}">${boxOverlay(ev)}
         </span>
@@ -1593,6 +1606,23 @@ function shotsSideBySide(cluster, urlOf) {
       </figure>`;
     })
     .join("");
+}
+
+function focusInStrip(viewer, key) {
+  // Moved by hand rather than with scrollIntoView: that scrolls every ancestor
+  // that can move, and the one thing this must not do is drag the page about
+  // while the picture is being brought into view.
+  const strip = viewer.querySelector(".strip");
+  const figure = key && strip && strip.querySelector(`[data-key="${key}"]`);
+  if (!strip || !figure) return;
+  // Measured from the rendered boxes rather than offsetLeft, which is relative
+  // to whichever ancestor happens to be positioned and would be wrong the day
+  // one of them gains a position.
+  const here = figure.getBoundingClientRect();
+  const frame = strip.getBoundingClientRect();
+  const middle = here.left - frame.left + strip.scrollLeft
+    - (frame.width - here.width) / 2;
+  strip.scrollTo({ left: Math.max(0, middle), behavior: "smooth" });
 }
 
 function clockOf(at) {
@@ -1654,10 +1684,12 @@ function drawShots() {
   $("#eventsEmpty").hidden = eventsList.length > 0;
 }
 
-function showCluster(cluster) {
+function showCluster(cluster, focusKey) {
   const viewer = $("#eventsViewer");
   viewer.hidden = false;
-  viewer.innerHTML = `<div class="strip">${shotsSideBySide(cluster, shotUrl)}</div>`;
+  const focus = focusKey || eventKey(cluster.events[0]);
+  viewer.innerHTML = `<div class="strip">${shotsSideBySide(cluster, shotUrl, focus)}</div>`;
+  focusInStrip(viewer, focus);
   const names = new Set(cluster.events.map((e) => e.name));
   $$("#eventsShots .shot").forEach((el) => el.classList.toggle("on", names.has(el.dataset.name)));
   markSelected("eventsTimeline", eventsClusters, cluster);
@@ -1672,9 +1704,10 @@ function showCluster(cluster) {
 
 function showShot(name) {
   // A still in the grid belongs to a cluster; opening it opens the whole group,
-  // so what you see from the grid and from the timeline is the same thing.
+  // so what you see from the grid and from the timeline is the same thing --
+  // scrolled to the one that was actually clicked.
   const cluster = eventsClusters.find((c) => c.events.some((e) => e.name === name));
-  if (cluster) showCluster(cluster);
+  if (cluster) showCluster(cluster, name);
 }
 
 async function loadEventDays() {
