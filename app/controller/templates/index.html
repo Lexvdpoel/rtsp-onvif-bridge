@@ -200,12 +200,15 @@
   .tl-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-left: auto; }
   .tl-legend .item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
   .tl-wrap { position: relative; margin-bottom: 4px; }
-  .lane { display: grid; grid-template-columns: minmax(90px, 150px) 1fr;
-    align-items: center; gap: 12px; margin-bottom: 4px; }
-  .lane .who { font-size: 12px; color: var(--muted); overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-  .lane .track { position: relative; }
-  .lane svg { display: block; width: 100%; height: 26px; overflow: visible; }
+  .track-wrap { position: relative; }
+  .track-svg { display: block; width: 100%; height: 56px; overflow: visible; cursor: pointer; }
+  .tip .trow.more { color: var(--muted); font-style: italic; }
+  /* Everything hiding behind one mark, laid out side by side. */
+  .strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+  .strip figure { margin: 0; flex: 0 0 auto; width: min(340px, 72vw); }
+  .strip img { display: block; width: 100%; border-radius: 8px; background: var(--bg); }
+  .strip figcaption { font-size: 12px; color: var(--muted); margin-top: 6px;
+    display: flex; align-items: center; gap: 6px; }
   .tl { display: block; width: 100%; height: 66px; overflow: visible; }
   .tl-hours { display: flex; justify-content: space-between; font-size: 11px;
     color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 14px; }
@@ -372,11 +375,13 @@
     <div class="card">
       <div id="allLanes"></div>
       <div class="tl-hours" id="allHours"></div>
+      <div class="hint">
+        Marks that would overlap are drawn as one, a little thicker, split by colour when
+        the group holds more than one kind. Hover to see what is in it; click to open them
+        side by side.
+      </div>
     </div>
-    <div class="viewer" id="allViewer" hidden>
-      <img id="allImage" alt="">
-      <div class="cap" id="allCaption"></div>
-    </div>
+    <div class="viewer" id="allViewer" hidden></div>
     <div class="tl-shots" id="allShots" style="max-height:none"></div>
     <div class="empty" id="allEmpty" hidden>Nothing recorded on this day.</div>
   </section>
@@ -694,10 +699,7 @@
       <div class="tip" id="eventsTip"></div>
     </div>
     <div class="tl-hours" id="eventsHours"></div>
-    <div class="viewer" id="eventsViewer" hidden>
-      <img id="eventsImage" alt="">
-      <div class="cap" id="eventsCaption"></div>
-    </div>
+    <div class="viewer" id="eventsViewer" hidden></div>
     <div class="tl-shots" id="eventsShots"></div>
     <div class="empty" id="eventsEmpty" hidden>Nothing recorded for this day.</div>
   </div>
@@ -1029,45 +1031,23 @@ document.addEventListener("visibilitychange", () => {
 // ------------------------------------------------------------ global timeline
 
 let allEvents = [];
+let allClusters = [];
 let allDayValue = "";
 
-function laneMarks(events, width) {
-  return events
-    .map((ev) => {
-      const x = dayFraction(ev.at) * width;
-      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
-      return `<line data-key="${ev.camera_id}|${ev.name}" x1="${x}" y1="5" x2="${x}" y2="21"
-        stroke="${colour}" stroke-width="4" stroke-linecap="round" opacity="0.85"/>`;
-    })
+function drawAllTrack() {
+  const width = TRACK_WIDTH;
+  allClusters = clusterEvents(allEvents);
+  const grid = [0, 3, 6, 9, 12, 15, 18, 21, 24]
+    .map((h) => `<line x1="${(h / 24) * width}" y1="6" x2="${(h / 24) * width}" y2="50"
+      stroke="var(--border)" stroke-width="1"/>`)
     .join("");
-}
-
-function drawAllLanes() {
-  const width = 1000;
-  const byCamera = new Map();
-  allEvents.forEach((ev) => {
-    if (!byCamera.has(ev.camera_id)) byCamera.set(ev.camera_id, []);
-    byCamera.get(ev.camera_id).push(ev);
-  });
-  // One lane per camera rather than one strip for everything: two cameras
-  // seeing the same car at the same moment would otherwise be one mark, and
-  // the question this view answers is which camera saw what, and when.
-  const lanes = [];
-  cameras.forEach((cam) => {
-    const events = byCamera.get(cam.id);
-    if (!events || !events.length) return;
-    const grid = [0, 3, 6, 9, 12, 15, 18, 21, 24]
-      .map((h) => `<line x1="${(h / 24) * width}" y1="2" x2="${(h / 24) * width}" y2="24"
-        stroke="var(--border)" stroke-width="1"/>`).join("");
-    lanes.push(`
-      <div class="lane">
-        <span class="who" title="${escapeHtml(cam.name)}">${escapeHtml(cam.name)}</span>
-        <span class="track">
-          <svg viewBox="0 0 ${width} 26" preserveAspectRatio="none">${grid}${laneMarks(events, width)}</svg>
-        </span>
-      </div>`);
-  });
-  $("#allLanes").innerHTML = lanes.join("");
+  $("#allLanes").innerHTML = `
+    <div class="track-wrap">
+      <svg class="track-svg" id="allTrack" viewBox="0 0 ${width} 56" preserveAspectRatio="none">
+        ${grid}${trackMarks(allClusters, 8, 48)}
+      </svg>
+      <div class="tip" id="allTip"></div>
+    </div>`;
   const hours = [];
   for (let h = 0; h <= 24; h += 3) hours.push(`<span>${String(h).padStart(2, "0")}:00</span>`);
   $("#allHours").innerHTML = hours.join("");
@@ -1096,17 +1076,24 @@ function drawAllShots() {
   $("#allEmpty").hidden = allEvents.length > 0;
 }
 
-function showAllShot(key) {
-  const ev = allEvents.find((e) => `${e.camera_id}|${e.name}` === key);
-  if (!ev) return;
+function allUrlOf(ev) {
+  return `/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}`;
+}
+
+function showAllCluster(cluster) {
   $("#allViewer").hidden = false;
-  $("#allImage").src = `/api/cameras/${ev.camera_id}/events/${allDayValue}/${ev.name}`;
-  const colour = CAT_COLOUR[ev.type] || "var(--muted)";
-  $("#allCaption").innerHTML =
-    `<span class="swatch" style="background:${colour}"></span>` +
-    `${escapeHtml(ev.camera)} · ${ev.type} · ${clockOf(ev.at)} · ` +
-    `${Math.round(ev.score * 100)}% confident`;
-  $$("#allShots .shot").forEach((el) => el.classList.toggle("on", el.dataset.key === key));
+  $("#allViewer").innerHTML =
+    `<div class="strip">${shotsSideBySide(cluster, allUrlOf)}</div>`;
+  const keys = new Set(cluster.events.map((e) => `${e.camera_id}|${e.name}`));
+  $$("#allShots .shot").forEach((el) => el.classList.toggle("on", keys.has(el.dataset.key)));
+  const first = $(`#allShots .shot[data-key="${cluster.events[0].camera_id}|${cluster.events[0].name}"]`);
+  if (first) first.scrollIntoView({ block: "nearest" });
+}
+
+function showAllShot(key) {
+  const cluster = allClusters.find((c) =>
+    c.events.some((e) => `${e.camera_id}|${e.name}` === key));
+  if (cluster) showAllCluster(cluster);
 }
 
 async function loadAllDays() {
@@ -1118,8 +1105,9 @@ async function loadAllDays() {
     .join("");
   if (!days.length) {
     allEvents = [];
+    allClusters = [];
     allDayValue = "";
-    drawAllLanes();
+    drawAllTrack();
     drawAllShots();
     $("#allCount").innerHTML = "<span>nothing recorded yet</span>";
     return;
@@ -1137,8 +1125,9 @@ async function loadAllEvents() {
   $("#allCount").innerHTML =
     `<span>${allEvents.length} across ${perCamera} camera${perCamera === 1 ? "" : "s"}</span>`;
   $("#allViewer").hidden = true;
-  drawAllLanes();
+  drawAllTrack();
   drawAllShots();
+  bindTrack("allTrack", "allTip", allClusters, showAllCluster);
 }
 
 $("#allDay").addEventListener("change", (event) => {
@@ -1148,10 +1137,6 @@ $("#allDay").addEventListener("change", (event) => {
 $("#allShots").addEventListener("click", (event) => {
   const shot = event.target.closest(".shot");
   if (shot) showAllShot(shot.dataset.key);
-});
-$("#allLanes").addEventListener("click", (event) => {
-  const mark = event.target.closest("line[data-key]");
-  if (mark) showAllShot(mark.dataset.key);
 });
 
 // ------------------------------------------------------------------- settings
@@ -1211,6 +1196,128 @@ let eventsCamId = null;
 let eventsList = [];
 let eventsDayValue = "";
 
+// The timeline is drawn in these units and stretched to whatever width it gets,
+// so a day is always 1000 wide however wide the window is.
+const TRACK_WIDTH = 1000;
+// Two marks closer together than this overlap on screen at any realistic width,
+// so they are drawn as one and opened together. At 1000 units for 24 hours,
+// six units is about eight and a half minutes.
+const CLUSTER_UNITS = 6;
+
+// A group is closed once it covers this much of the day, however densely the
+// detections keep arriving. Without it, a camera that sees something every few
+// minutes all afternoon would chain into one mark covering the afternoon --
+// each detection near enough to the last, the group never ending.
+const CLUSTER_MAX_SPAN = CLUSTER_UNITS * 4;
+
+function clusterEvents(events) {
+  // Events arrive oldest first, which is what lets this be a single pass.
+  // Two rules, both measured against real positions rather than a running
+  // average, so the answer does not depend on what was merged before:
+  //   join if it is within CLUSTER_UNITS of the previous detection,
+  //   unless that would stretch the group past CLUSTER_MAX_SPAN.
+  const out = [];
+  events.forEach((ev) => {
+    const x = dayFraction(ev.at) * TRACK_WIDTH;
+    const last = out[out.length - 1];
+    if (last && x - last.last <= CLUSTER_UNITS && x - last.first <= CLUSTER_MAX_SPAN) {
+      last.events.push(ev);
+      last.last = x;
+      last.x = (last.first + last.last) / 2;
+      return;
+    }
+    out.push({ x, first: x, last: x, events: [ev] });
+  });
+  return out;
+}
+
+function trackMarks(clusters, top, bottom) {
+  return clusters
+    .map((cluster, index) => {
+      // A cluster of several types is drawn as stacked segments, so a mixed
+      // group reads as mixed before anyone hovers it.
+      const types = [];
+      ["person", "vehicle", "animal"].forEach((t) => {
+        if (cluster.events.some((e) => e.type === t)) types.push(t);
+      });
+      if (!types.length) types.push("other");
+      const many = cluster.events.length > 1;
+      const span = bottom - top;
+      const each = span / types.length;
+      const segments = types
+        .map((type, i) => {
+          const colour = CAT_COLOUR[type] || "var(--muted)";
+          // A 2px gap between segments keeps two colours from reading as one.
+          const y1 = top + i * each + (i ? 1 : 0);
+          const y2 = top + (i + 1) * each - (i < types.length - 1 ? 1 : 0);
+          return `<line x1="${cluster.x}" y1="${y1}" x2="${cluster.x}" y2="${y2}"
+            stroke="${colour}" stroke-width="${many ? 7 : 4}"
+            stroke-linecap="${types.length === 1 ? "round" : "butt"}" opacity="0.9"/>`;
+        })
+        .join("");
+      // One transparent band per cluster, wider than the mark, so a four-pixel
+      // line is not something you have to aim at.
+      return `<g data-cluster="${index}">${segments}
+        <rect x="${cluster.x - 6}" y="${top - 4}" width="12" height="${span + 8}"
+          fill="transparent"/></g>`;
+    })
+    .join("");
+}
+
+function clusterSummary(cluster) {
+  const shown = cluster.events.slice(0, 6);
+  const rows = shown
+    .map((ev) => {
+      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
+      return `<div class="trow"><span class="swatch" style="background:${colour}"></span>` +
+        `${who}${ev.type}<span class="tval">${clockOf(ev.at)}</span></div>`;
+    })
+    .join("");
+  const rest = cluster.events.length - shown.length;
+  return rows + (rest > 0 ? `<div class="trow more">and ${rest} more</div>` : "");
+}
+
+function bindTrack(svgId, tipId, clusters, onPick) {
+  const svg = $(`#${svgId}`);
+  const tip = $(`#${tipId}`);
+  if (!svg || !tip) return;
+  svg.addEventListener("mousemove", (event) => {
+    const group = event.target.closest("g[data-cluster]");
+    if (!group) { tip.classList.remove("show"); return; }
+    const cluster = clusters[Number(group.dataset.cluster)];
+    tip.innerHTML = clusterSummary(cluster);
+    const box = svg.getBoundingClientRect();
+    const wanted = event.clientX - box.left - 80;
+    tip.style.left = `${Math.max(0, Math.min(box.width - 200, wanted))}px`;
+    tip.style.top = `${box.height + 4}px`;
+    tip.classList.add("show");
+  });
+  svg.addEventListener("mouseleave", () => tip.classList.remove("show"));
+  svg.addEventListener("click", (event) => {
+    const group = event.target.closest("g[data-cluster]");
+    if (group) onPick(clusters[Number(group.dataset.cluster)]);
+  });
+}
+
+function shotsSideBySide(cluster, urlOf) {
+  // Everything in the group, side by side: the reason to click a cluster is to
+  // see what the single mark was hiding.
+  return cluster.events
+    .map((ev) => {
+      const colour = CAT_COLOUR[ev.type] || "var(--muted)";
+      const who = ev.camera ? `${escapeHtml(ev.camera)} · ` : "";
+      return `<figure>
+        <img src="${urlOf(ev)}" alt="${who}${ev.type}">
+        <figcaption>
+          <span class="swatch" style="background:${colour}"></span>
+          ${who}${ev.type} · ${clockOf(ev.at)} · ${Math.round(ev.score * 100)}%
+        </figcaption>
+      </figure>`;
+    })
+    .join("");
+}
+
 function clockOf(at) {
   const d = new Date(at * 1000);
   const pad = (n) => String(n).padStart(2, "0");
@@ -1222,27 +1329,21 @@ function dayFraction(at) {
   return (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400;
 }
 
+let eventsClusters = [];
+
 function drawTimeline() {
   const svg = $("#eventsTimeline");
-  const width = 1000;
-  const height = 66;
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  const parts = [];
+  const width = TRACK_WIDTH;
+  svg.setAttribute("viewBox", `0 0 ${width} 66`);
+  eventsClusters = clusterEvents(eventsList);
   // Three-hour grid, kept recessive: it is there to read a position against,
   // not to be looked at.
-  for (let h = 0; h <= 24; h += 3) {
-    const x = (h / 24) * width;
-    parts.push(`<line x1="${x}" y1="6" x2="${x}" y2="${height - 6}"
-      stroke="var(--border)" stroke-width="1"/>`);
-  }
-  // One mark per detection. Rounded ends, 4px wide, anchored to the baseline.
-  eventsList.forEach((ev, index) => {
-    const x = dayFraction(ev.at) * width;
-    const colour = CAT_COLOUR[ev.type] || "var(--muted)";
-    parts.push(`<line data-index="${index}" x1="${x}" y1="10" x2="${x}" y2="${height - 10}"
-      stroke="${colour}" stroke-width="4" stroke-linecap="round" opacity="0.85"/>`);
-  });
-  svg.innerHTML = parts.join("");
+  const grid = [0, 3, 6, 9, 12, 15, 18, 21, 24]
+    .map((h) => `<line x1="${(h / 24) * width}" y1="6" x2="${(h / 24) * width}" y2="60"
+      stroke="var(--border)" stroke-width="1"/>`)
+    .join("");
+  svg.innerHTML = grid + trackMarks(eventsClusters, 12, 54);
+  bindTrack("eventsTimeline", "eventsTip", eventsClusters, showCluster);
 
   const hours = [];
   for (let h = 0; h <= 24; h += 3) hours.push(`<span>${String(h).padStart(2, "0")}:00</span>`);
@@ -1274,18 +1375,21 @@ function drawShots() {
   $("#eventsEmpty").hidden = eventsList.length > 0;
 }
 
-function showShot(name) {
-  const ev = eventsList.find((e) => e.name === name);
-  if (!ev) return;
+function showCluster(cluster) {
   $("#eventsViewer").hidden = false;
-  $("#eventsImage").src = shotUrl(ev);
-  const colour = CAT_COLOUR[ev.type] || "var(--muted)";
-  $("#eventsCaption").innerHTML =
-    `<span class="swatch" style="background:${colour}"></span>` +
-    `${ev.type} · ${clockOf(ev.at)} · ${Math.round(ev.score * 100)}% confident`;
-  $$("#eventsShots .shot").forEach((el) => el.classList.toggle("on", el.dataset.name === name));
-  const active = $(`#eventsShots .shot[data-name="${name}"]`);
-  if (active) active.scrollIntoView({ block: "nearest" });
+  $("#eventsViewer").innerHTML =
+    `<div class="strip">${shotsSideBySide(cluster, shotUrl)}</div>`;
+  const names = new Set(cluster.events.map((e) => e.name));
+  $$("#eventsShots .shot").forEach((el) => el.classList.toggle("on", names.has(el.dataset.name)));
+  const first = $(`#eventsShots .shot[data-name="${cluster.events[0].name}"]`);
+  if (first) first.scrollIntoView({ block: "nearest" });
+}
+
+function showShot(name) {
+  // A still in the grid belongs to a cluster; opening it opens the whole group,
+  // so what you see from the grid and from the timeline is the same thing.
+  const cluster = eventsClusters.find((c) => c.events.some((e) => e.name === name));
+  if (cluster) showCluster(cluster);
 }
 
 async function loadEventDays() {
@@ -1333,26 +1437,6 @@ $("#closeEvents").addEventListener("click", () => $("#eventsDialog").close());
 $("#eventsShots").addEventListener("click", (event) => {
   const shot = event.target.closest(".shot");
   if (shot) showShot(shot.dataset.name);
-});
-$("#eventsTimeline").addEventListener("click", (event) => {
-  const mark = event.target.closest("line[data-index]");
-  if (mark) showShot(eventsList[Number(mark.dataset.index)].name);
-});
-$("#eventsTimeline").addEventListener("mousemove", (event) => {
-  const tip = $("#eventsTip");
-  const mark = event.target.closest("line[data-index]");
-  if (!mark) { tip.classList.remove("show"); return; }
-  const ev = eventsList[Number(mark.dataset.index)];
-  const colour = CAT_COLOUR[ev.type] || "var(--muted)";
-  tip.innerHTML = `<div class="trow"><span class="swatch" style="background:${colour}"></span>` +
-    `${ev.type}<span class="tval">${clockOf(ev.at)}</span></div>`;
-  const box = $("#eventsTimeline").getBoundingClientRect();
-  tip.style.left = `${Math.min(box.width - 140, Math.max(0, event.clientX - box.left - 60))}px`;
-  tip.style.top = "-38px";
-  tip.classList.add("show");
-});
-$("#eventsTimeline").addEventListener("mouseleave", () => {
-  $("#eventsTip").classList.remove("show");
 });
 
 function eventsText(cam) {
