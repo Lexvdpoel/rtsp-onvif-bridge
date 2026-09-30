@@ -56,6 +56,10 @@ RUN chmod +x /usr/local/share/udhcpc.script /usr/local/bin/entrypoint.sh
 
 COPY app ./app
 
+# The same blue icon the Unraid tile uses, so the browser tab matches it.
+# Copied in beside the controller rather than kept in two places.
+COPY unraid/icon.png ./app/controller/icon.png
+
 ENV ROLE=controller \
     STATE_DIR=/state \
     DATA_DIR=/data

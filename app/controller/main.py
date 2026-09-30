@@ -572,6 +572,27 @@ def camera_event_image(cam_id: str, day: str, name: str):
                         headers={"Cache-Control": "public, max-age=31536000"})
 
 
+# --------------------------------------------------------------------- favicon
+
+# Beside this module in the image; in a checkout it is still in unraid/, which
+# is where it is maintained.
+ICON_PATHS = (
+    os.path.join(os.path.dirname(__file__), "icon.png"),
+    os.path.join(os.path.dirname(__file__), "..", "..", "unraid", "icon.png"),
+)
+
+
+@app.get("/favicon.ico")
+def favicon():
+    for path in ICON_PATHS:
+        if os.path.isfile(path):
+            return FileResponse(
+                path, media_type="image/png",
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+    raise HTTPException(status_code=404, detail="No icon in this build")
+
+
 # ------------------------------------------------------------------ live view
 
 

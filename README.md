@@ -409,6 +409,13 @@ and a spread of UDP ports. An `<img>` pointed at a multipart stream needs
 neither and works everywhere — at the cost of bandwidth, which is why the frame
 rate is a handful per second rather than the full stream.
 
+**Fullscreen** takes the chrome off entirely — no borders, no corners, no gaps —
+and lays the cameras out to fill the screen. The column count is worked out
+rather than left to CSS: three cameras on a 16:9 screen become two by two with
+960-pixel tiles, not three in a row with 640-pixel ones and half the height
+empty. CSS can fit columns to a width, but it cannot see how many rows that
+leaves, so it cannot promise every camera is on the screen.
+
 <a id="live_view"></a>
 
 #### How the frames get there

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RTSP to ONVIF bridge</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
 <style>
   :root {
     color-scheme: light;
@@ -194,6 +195,19 @@
     padding: 12px; pointer-events: none;
   }
 
+  /* Fullscreen: no chrome at all. The columns are worked out in JavaScript so
+     every camera fits the screen without scrolling, which CSS alone cannot do
+     -- auto-fill knows the width it has, not how many rows that leaves. */
+  .live-grid:fullscreen {
+    gap: 0; height: 100%; width: 100%; background: #000; padding: 0;
+    grid-auto-rows: 1fr;
+  }
+  .live-grid:fullscreen .tile {
+    border: 0; border-radius: 0; height: 100%; min-height: 0;
+  }
+  .live-grid:fullscreen .tile img { aspect-ratio: auto; height: 100%; }
+  .live-grid:fullscreen .tile .label { font-size: 13px; padding: 8px 12px; }
+
   /* ---- detection timeline ---- */
   .tl-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
   .tl-bar select { width: auto; min-width: 200px; }
@@ -357,6 +371,7 @@
         <option value="460">Large</option>
       </select>
       <span class="pill" id="liveNote"><span>paused</span></span>
+      <button id="liveFullscreen" type="button">Fullscreen</button>
     </div>
     <div class="live-grid" id="liveGrid"></div>
     <div class="empty" id="liveEmpty" hidden>No cameras are running.</div>
@@ -1005,6 +1020,7 @@ function attachStreams() {
   const fps = quality === "high" ? 6 : 4;
   liveAttachedAt = Date.now();
   liveAttachedTo = tileKey(liveCameras());
+  fitGrid();
   $$("#liveGrid img").forEach((img) => {
     const id = img.dataset.id;
     const tile = img.parentElement;
@@ -1068,6 +1084,62 @@ function stopLive() {
   $$("#liveGrid .tile").forEach((t) => t.classList.remove("playing", "down"));
   $("#liveNote").innerHTML = "<span>paused</span>";
 }
+
+function fitGrid() {
+  const grid = $("#liveGrid");
+  const full = document.fullscreenElement === grid
+    || document.webkitFullscreenElement === grid;
+  if (!full) {
+    // Back to the normal view, where the tile size decides the columns.
+    grid.style.gridTemplateColumns = "";
+    return;
+  }
+  const count = $$("#liveGrid .tile").length;
+  if (!count) return;
+  const width = grid.clientWidth;
+  const height = grid.clientHeight;
+  const aspect = 16 / 9;
+  // Try every column count and keep the one that makes the tiles largest. With
+  // five cameras on a wide screen that is three and two, not five in a row --
+  // a row of five leaves most of the height empty.
+  let best = 1;
+  let bestTile = 0;
+  for (let cols = 1; cols <= count; cols += 1) {
+    const rows = Math.ceil(count / cols);
+    const tile = Math.min(width / cols, (height / rows) * aspect);
+    if (tile > bestTile) {
+      bestTile = tile;
+      best = cols;
+    }
+  }
+  grid.style.gridTemplateColumns = `repeat(${best}, 1fr)`;
+}
+
+function toggleFullscreen() {
+  const grid = $("#liveGrid");
+  const full = document.fullscreenElement || document.webkitFullscreenElement;
+  if (full) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    return;
+  }
+  const request = grid.requestFullscreen || grid.webkitRequestFullscreen;
+  if (!request) {
+    toast("This browser will not go fullscreen from a script", true);
+    return;
+  }
+  Promise.resolve(request.call(grid)).catch((err) => toast(err.message, true));
+}
+
+$("#liveFullscreen").addEventListener("click", toggleFullscreen);
+["fullscreenchange", "webkitfullscreenchange"].forEach((name) => {
+  document.addEventListener(name, () => {
+    const full = document.fullscreenElement === $("#liveGrid")
+      || document.webkitFullscreenElement === $("#liveGrid");
+    $("#liveFullscreen").textContent = full ? "Leave fullscreen" : "Fullscreen";
+    fitGrid();
+  });
+});
+window.addEventListener("resize", fitGrid);
 
 $("#liveQuality").addEventListener("change", () => { if (liveOn) startLive(); });
 $("#liveSize").addEventListener("change", () => {
