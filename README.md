@@ -409,10 +409,22 @@ and a spread of UDP ports. An `<img>` pointed at a multipart stream needs
 neither and works everywhere -- at the cost of bandwidth, which is why the frame
 rate is a handful per second rather than the full stream.
 
-**Timeline** is every camera's detections on one day, one lane per camera. One
-strip for all of them would merge two cameras seeing the same car into a single
-mark, and the question this view answers is which camera saw what, and when.
-Click a mark or a still to enlarge it.
+**Timeline** is every camera's detections on one day, on a single track.
+
+Marks that would land on top of each other are drawn as one, a little thicker,
+split into coloured segments when the group holds more than one kind — so a
+mixed group reads as mixed before you touch it. Hover to see what is inside:
+time, camera and class, up to six of them and a count for the rest. Click to
+open the whole group side by side, which is the point of grouping them rather
+than hiding them.
+
+Grouping is bounded as well as near: detections keep joining while each is close
+to the last, but a group closes once it covers about half an hour. Without that
+second rule, a camera that sees something every few minutes all afternoon would
+chain into one mark covering the afternoon.
+
+The per-camera timeline behind the **Detections** button works the same way, and
+clicking a still opens the group it belongs to rather than that still alone.
 
 ### The detection timeline
 
