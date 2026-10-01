@@ -441,10 +441,23 @@ being judged. Someone who walks into view and then stands still moved when they
 arrived and is no less there for having stopped; they keep counting until they
 leave, and a new sighting has to earn it again.
 
+It is also where the CPU goes. The comparison is made *before* the model, and on
+a frame where nothing changed the model is not run at all — so a camera watching
+an empty yard costs about a millisecond a frame instead of a hundred or more, and
+only starts working when something walks into it. The saving is the whole scene,
+not one detection: a quiet camera is close to free.
+
+Something standing in view is a different case, because there is a claim to keep
+checking. It is re-checked every `DETECT_RECHECK` seconds (10 by default) even on
+a still picture, so a stream that freezes — every frame identical because the
+encoder stalled, not because the yard is quiet — cannot leave motion stuck on.
+
 Turn it off per camera with **Only when something moved** — for a gate you want
-told about whether or not the car arrived while you were looking. Tune the
-threshold with `DETECT_MOTION_NOISE` (4 levels out of 255 by default); sensor
-noise on a dark scene sits well under it.
+told about whether or not the car arrived while you were looking. That costs the
+saving too: the model then runs on every frame, all day. Tune the thresholds with
+`DETECT_MOTION_NOISE` (4 levels out of 255, below which a region counts as
+unchanged) and `DETECT_MOTION_AREA` (0.0005 of the picture, about twelve cells of
+a 640px frame, below which the whole frame counts as quiet).
 
 ### The still is the frame the box describes
 

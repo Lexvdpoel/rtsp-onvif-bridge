@@ -34,6 +34,24 @@ DEBUG_FLOOR = float(os.environ.get("DETECT_DEBUG_FLOOR", "0.15"))
 # enough to stay cheap to decode.
 FRAME_SIZE = int(os.environ.get("DETECT_FRAME_SIZE", "640"))
 
+# How much a region has to change, in levels out of 255, before it counts as
+# having moved. Sensor noise on a dark scene sits well under this; raise it on a
+# camera whose picture crawls, lower it for something that moves very slowly.
+MOTION_NOISE = float(os.environ.get("DETECT_MOTION_NOISE", "4"))
+
+# And how much of the picture has to change like that before the frame is worth
+# running the model over, as a fraction of it. The comparison happens on a
+# quarter-scale copy, so a 640px frame is 160x160 = 25600 cells and the default
+# comes to 12 of them -- a person at the far end of a driveway, already smaller
+# than anything you would want reported, still covers several times that.
+MOTION_AREA = float(os.environ.get("DETECT_MOTION_AREA", "0.0005"))
+
+# While something is standing in view the model is run again every so often even
+# on a still picture, to find out whether it is still there. Without that, a
+# frozen stream -- every frame identical because the encoder stalled, not
+# because the scene is quiet -- would hold motion on for ever.
+RECHECK_SECONDS = float(os.environ.get("DETECT_RECHECK", "10"))
+
 
 class Motion:
     """How much of the picture changed since the frame before it.
@@ -51,12 +69,17 @@ class Motion:
 
     SCALE = 4
 
-    def __init__(self, noise: float = 4.0):
+    def __init__(self, noise: float = 4.0, area: float = MOTION_AREA):
         # Mean absolute difference, in levels out of 255, below which a region
         # counts as unchanged. Sensor noise at night sits a long way under this.
         self.noise = noise
+        # How much of the picture has to change before the frame is worth
+        # looking at. A handful of scattered cells is a compression artefact,
+        # not something arriving.
+        self.area = area
         self._previous = None
         self._diff = None
+        self._changed = 0
 
     def update(self, frame):
         import numpy as np
@@ -68,8 +91,31 @@ class Motion:
             # compared with. Saying so costs one sighting; subtracting two
             # different shapes would take the detector down.
             self._diff = None
+            self._changed = 0
             return
         self._diff = np.abs(small - previous)
+        self._changed = int((self._diff >= self.noise).sum())
+
+    def floor(self) -> int:
+        """How many changed cells amount to something happening."""
+        if self._diff is None:
+            return 0
+        return max(4, int(self.area * self._diff.size))
+
+    def anywhere(self) -> bool:
+        """Whether anything in the picture at all changed.
+
+        This is asked *before* the model runs, and the answer decides whether it
+        runs. Without a previous frame the answer is yes: a frame that cannot be
+        compared has to be looked at, or a detector would never start.
+
+        Note which way round the two unknowns go. Here "I cannot tell" means
+        look, because the cost of looking is some work; in moved() it means no,
+        because the cost of believing is a false alarm.
+        """
+        if self._diff is None:
+            return True
+        return self._changed >= self.floor()
 
     def moved(self, box) -> bool:
         """Whether the region inside box changed enough to be movement.
@@ -109,11 +155,6 @@ def overlap(a, b) -> float:
 # same thing still sitting there. A car that parks is detected in every frame
 # for as long as it stays; without this it would be reported for ever.
 STILL_OVERLAP = float(os.environ.get("DETECT_STILL_OVERLAP", "0.6"))
-
-# How much a region has to change, in levels out of 255, before it counts as
-# having moved. Sensor noise on a dark scene sits well under this; raise it on a
-# camera whose picture crawls, lower it for something that moves very slowly.
-MOTION_NOISE = float(os.environ.get("DETECT_MOTION_NOISE", "4"))
 
 
 class Tracker:
@@ -231,11 +272,20 @@ class Detector(threading.Thread):
             require_motion=getattr(cfg, "detect_motion", True),
         )
         self.motion = Motion(MOTION_NOISE)
+        self.require_motion = getattr(cfg, "detect_motion", True)
         self.wanted = classes.expand(cfg.detect_types)
         self.error = ""
         self.frames = 0
+        self.looked = 0
+        self.skipped = 0
         self._last_debug = 0.0
         self._last_still = 0.0
+        self._last_skip = 0.0
+        self._last_look = 0.0
+        # What was confirmed present the last time the model actually ran. A
+        # skipped frame carries it forward: nothing changed, so nothing about
+        # what is standing there has changed either.
+        self._presence: dict[str, float] = {}
         self._stop = threading.Event()
 
     def source(self) -> str:
@@ -309,6 +359,24 @@ class Detector(threading.Thread):
             self.handle_frame(frame)
 
     def handle_frame(self, frame):
+        # The comparison comes first and the model second, which is the whole
+        # point: on a quiet scene the expensive half never runs. A frame costs
+        # about a millisecond to compare against the one before it and a
+        # hundred or more to put through the model, so a camera watching an
+        # empty yard costs almost nothing until something walks into it.
+        self.motion.update(frame)
+        if self.require_motion and not self.motion.anywhere() and not self._overdue():
+            self.skipped += 1
+            if DEBUG:
+                self._log_skip()
+            # Presence is carried forward rather than cleared. The picture is
+            # the same picture; saying nobody is there now would make motion
+            # flap off and on around anyone standing still.
+            self._report(self._presence)
+            return
+
+        self.looked += 1
+        self._last_look = time.monotonic()
         best: dict[str, tuple] = {}
         seen: list[tuple[str, float]] = []
         # The model is told what is wanted so it does not run suppression over
@@ -325,22 +393,19 @@ class Detector(threading.Thread):
         if seen:
             self._log_candidates(seen)
 
-        # Which of them stirred since the last frame. Worked out here, once,
-        # rather than per candidate: the difference image is the same for all.
-        self.motion.update(frame)
+        # Which of them stirred, from the difference image already computed at
+        # the top. Whole-frame movement was enough to justify running the model;
+        # this asks the narrower question of whether the thing itself moved.
         moved = {name for name, (_, box) in best.items() if self.motion.moved(box)}
         if DEBUG and best and not moved:
             self._log_still(best)
 
         events, confirmed = self.tracker.update(best, moved)
 
-        if self.on_frame is not None:
-            try:
-                # Only what is confirmed: a shape the model found in a hedge
-                # that has not moved is not something to tell an NVR about.
-                self.on_frame({name: best[name][0] for name in confirmed})
-            except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
-                print(f"[detect] could not report presence: {exc}")
+        # Only what is confirmed: a shape the model found in a hedge that has
+        # not moved is not something to tell an NVR about.
+        self._presence = {name: best[name][0] for name in confirmed}
+        self._report(self._presence)
 
         for name, score, box in events:
             coarse = classes.coarse_of(name)
@@ -351,6 +416,38 @@ class Detector(threading.Thread):
                 self.on_event(name, score, coarse, box, frame)
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report {name}: {exc}")
+
+    def _overdue(self) -> bool:
+        """Whether to look again despite a still picture.
+
+        Only while something is standing in view. With an empty scene there is
+        nothing to confirm and nothing to lose by waiting for it to change,
+        which is what makes a quiet camera free.
+        """
+        if not self._presence:
+            return False
+        return time.monotonic() - self._last_look >= RECHECK_SECONDS
+
+    def _report(self, presence: dict):
+        if self.on_frame is None:
+            return
+        try:
+            self.on_frame(dict(presence))
+        except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
+            print(f"[detect] could not report presence: {exc}")
+
+    def _log_skip(self):
+        """Under DETECT_DEBUG, say how much work the still picture saved."""
+        now = time.monotonic()
+        if now - self._last_skip < 10.0:
+            return
+        self._last_skip = now
+        total = self.looked + self.skipped
+        share = 100.0 * self.skipped / total if total else 0.0
+        print(
+            f"[detect] nothing changed; model not run "
+            f"({self.skipped} of {total} frames skipped, {share:.0f}%)"
+        )
 
     def _log_still(self, best):
         """Say when something was found but nothing moved, under DETECT_DEBUG.

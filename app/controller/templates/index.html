@@ -704,9 +704,16 @@
             that is the only thing such a detection can be. With this on, a detection is
             only believed once that part of the picture has actually changed — movement
             anywhere during the sighting counts, so someone who walks in and then stands
-            still is still reported. Turn it off for a camera watching something that
-            genuinely never moves, such as a gate you want told about whether or not the
-            car arrived while you were looking.
+            still is still reported.
+            It is also what the CPU cost depends on. The comparison is made first and
+            the model is not run at all on a frame where nothing changed, so a camera
+            watching an empty yard costs about a millisecond a frame instead of a
+            hundred, and only starts working when something walks into it. Something
+            standing in view is re-checked every ten seconds, so a stream that freezes
+            cannot leave motion stuck on.
+            Turn it off for a camera watching something that genuinely never moves, such
+            as a gate you want told about whether or not the car arrived while you were
+            looking — at the price of running the model on every frame, all day.
           </div>
           <div class="wide hint">
             Stills are what make the timeline worth opening: they turn a count into
