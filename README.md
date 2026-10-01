@@ -424,6 +424,39 @@ The box lives in the filename, because the store deliberately has no index:
 
 Stills written before this have no box and simply do not get an outline.
 
+### Nothing is believed unless something moved
+
+A model asked twice about the same still picture does not always answer the same
+way. It will find a person in a hedge or a car in a pattern of shadows, hold
+that opinion for a frame or two, and drop it — and on a scene where nothing has
+moved, that is the only thing such a detection can be.
+
+So each frame is compared with the one before it, and a detection is only
+believed once that part of the picture has actually changed. The comparison is
+made on a quarter-scale greyscale copy and costs about a millisecond, against
+the hundred or more the model itself takes.
+
+Movement **anywhere during the sighting** counts, not movement in the frame
+being judged. Someone who walks into view and then stands still moved when they
+arrived and is no less there for having stopped; they keep counting until they
+leave, and a new sighting has to earn it again.
+
+Turn it off per camera with **Only when something moved** — for a gate you want
+told about whether or not the car arrived while you were looking. Tune the
+threshold with `DETECT_MOTION_NOISE` (4 levels out of 255 by default); sensor
+noise on a dark scene sits well under it.
+
+### The still is the frame the box describes
+
+The saved picture is the frame the detector analysed, encoded, not a fresh grab
+from the camera. Fetching one takes a second or two, and in that time a walking
+person has walked — the picture was a later moment than the outline drawn on it,
+so the outline trailed behind them.
+
+That means a still is at sub-stream quality rather than main-stream, which is
+the price of the two being the same instant. It also removes one connection to
+the camera per detection.
+
 ### A parked car is reported once
 
 Something that has not moved since it was last reported is not reported again.

@@ -81,6 +81,7 @@ class Config:
     detect_min_hits: int
     detect_cooldown: int
     detect_model: str
+    detect_motion: bool
     event_hold: int
     clips: bool
     width: int
@@ -132,6 +133,7 @@ class Config:
             detect_min_hits=_env_int("DETECT_MIN_HITS", 3),
             detect_cooldown=_env_int("DETECT_COOLDOWN", 30),
             detect_model=_env("DETECT_MODEL", "fast"),
+            detect_motion=_env_bool("DETECT_MOTION", True),
             event_hold=_env_int("EVENT_HOLD", 8),
             clips=_env_bool("CLIPS", True),
             width=_env_int("VIDEO_WIDTH", 1920),
@@ -418,25 +420,27 @@ def main() -> int:
         # because it only needs to know something is there, but a still is for a
         # person to look at.
         if cfg.clips:
-            still_source = (
-                f"rtsp://127.0.0.1:{cfg.rtsp_port}/main" if cfg.proxy
-                else cfg.source_url
-            )
+            # The still is the detector's own frame, so the recorder only needs
+            # to know how to put it back in proportion: the detector decodes to
+            # a square, and this is the shape it came from.
+            watched_w = cfg.width_sub if cfg.source_url_sub else cfg.width
+            watched_h = cfg.height_sub if cfg.source_url_sub else cfg.height
             recorder = recorder_mod.Recorder(
-                cfg.id, _env("STATE_DIR", "/state"), still_source,
-                transport="tcp" if cfg.proxy else cfg.rtsp_transport,
+                cfg.id, _env("STATE_DIR", "/state"), detect_mod.FRAME_SIZE,
+                aspect=(watched_w / watched_h) if watched_h else 16 / 9,
             )
             recorder.start()
 
-        def on_detection(name: str, score: float, coarse: str, box=None):
+        def on_detection(name: str, score: float, coarse: str, box=None,
+                         frame=None):
             state.detections.append(
                 {"type": name, "coarse": coarse, "box": box,
                  "score": round(score, 3), "at": time.time()}
             )
             del state.detections[:-50]
             events.note_detection(name, score, coarse)
-            if recorder is not None:
-                recorder.record(name, score, box)
+            if recorder is not None and frame is not None:
+                recorder.record(name, score, box, frame)
 
         # Read through the relay when there is one, so the camera is opened
         # once for the sub stream and the detector shares it with whatever else

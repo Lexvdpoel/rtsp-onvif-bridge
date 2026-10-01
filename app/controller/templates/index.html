@@ -693,6 +693,21 @@
             <input type="checkbox" id="f-clips" name="clips" checked>
             <label for="f-clips" style="margin:0">Save a still per detection</label>
           </div>
+          <div class="check">
+            <input type="checkbox" id="f-detect-motion" name="detect_motion" checked>
+            <label for="f-detect-motion" style="margin:0">Only when something moved</label>
+          </div>
+          <div class="wide hint">
+            A model asked twice about the same still picture does not always answer the
+            same way: it will find a person in a hedge or a car in a pattern of shadows,
+            hold that for a frame or two, and drop it. On a scene where nothing has moved,
+            that is the only thing such a detection can be. With this on, a detection is
+            only believed once that part of the picture has actually changed — movement
+            anywhere during the sighting counts, so someone who walks in and then stands
+            still is still reported. Turn it off for a camera watching something that
+            genuinely never moves, such as a gate you want told about whether or not the
+            car arrived while you were looking.
+          </div>
           <div class="wide hint">
             Stills are what make the timeline worth opening: they turn a count into
             something you can check. One ffmpeg run and a few tens of kilobytes per

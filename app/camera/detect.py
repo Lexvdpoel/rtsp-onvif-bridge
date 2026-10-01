@@ -35,6 +35,61 @@ DEBUG_FLOOR = float(os.environ.get("DETECT_DEBUG_FLOOR", "0.15"))
 FRAME_SIZE = int(os.environ.get("DETECT_FRAME_SIZE", "640"))
 
 
+class Motion:
+    """How much of the picture changed since the frame before it.
+
+    A model asked the same question of the same still picture does not always
+    give the same answer. It will occasionally find a person in a hedge or a car
+    in a pattern of shadows, hold that opinion for a frame or two, and drop it
+    -- and on a scene where nothing has moved, that is the only thing it can be.
+
+    So a detection is weighed against what changed. The comparison is made on a
+    quarter-scale greyscale copy: a shape large enough to be worth reporting is
+    still several pixels there, and it keeps this to about a millisecond on a
+    frame the detector spends a hundred times longer on.
+    """
+
+    SCALE = 4
+
+    def __init__(self, noise: float = 4.0):
+        # Mean absolute difference, in levels out of 255, below which a region
+        # counts as unchanged. Sensor noise at night sits a long way under this.
+        self.noise = noise
+        self._previous = None
+        self._diff = None
+
+    def update(self, frame):
+        import numpy as np
+
+        small = frame[:: self.SCALE, :: self.SCALE].astype(np.float32).mean(axis=2)
+        previous, self._previous = self._previous, small
+        if previous is None or previous.shape != small.shape:
+            # A stream that comes back at a different size has no frame to be
+            # compared with. Saying so costs one sighting; subtracting two
+            # different shapes would take the detector down.
+            self._diff = None
+            return
+        self._diff = np.abs(small - previous)
+
+    def moved(self, box) -> bool:
+        """Whether the region inside box changed enough to be movement.
+
+        Without a previous frame the answer is no, not yes. "I cannot tell" and
+        "it moved" are different things, and treating the first as the second
+        would let the first frame after every reconnect through unchecked --
+        which is exactly when a model is most likely to be guessing.
+        """
+        if self._diff is None or not box:
+            return False
+        height, width = self._diff.shape
+        x1 = max(0, min(width - 1, int(box[0] * width)))
+        y1 = max(0, min(height - 1, int(box[1] * height)))
+        x2 = max(x1 + 1, min(width, int(round(box[2] * width))))
+        y2 = max(y1 + 1, min(height, int(round(box[3] * height))))
+        region = self._diff[y1:y2, x1:x2]
+        return region.size > 0 and float(region.mean()) >= self.noise
+
+
 def overlap(a, b) -> float:
     """How much two boxes share, as intersection over union."""
     if not a or not b:
@@ -54,6 +109,11 @@ def overlap(a, b) -> float:
 # same thing still sitting there. A car that parks is detected in every frame
 # for as long as it stays; without this it would be reported for ever.
 STILL_OVERLAP = float(os.environ.get("DETECT_STILL_OVERLAP", "0.6"))
+
+# How much a region has to change, in levels out of 255, before it counts as
+# having moved. Sensor noise on a dark scene sits well under this; raise it on a
+# camera whose picture crawls, lower it for something that moves very slowly.
+MOTION_NOISE = float(os.environ.get("DETECT_MOTION_NOISE", "4"))
 
 
 class Tracker:
@@ -75,19 +135,28 @@ class Tracker:
     """
 
     def __init__(self, min_hits: int = 3, cooldown: float = 30.0,
-                 still_overlap: float = STILL_OVERLAP):
+                 still_overlap: float = STILL_OVERLAP, require_motion: bool = True):
         self.min_hits = max(1, min_hits)
         self.cooldown = cooldown
         self.still_overlap = still_overlap
+        self.require_motion = require_motion
         self._hits: dict[str, int] = {}
         self._last_sent: dict[str, float] = {}
         self._last_box: dict[str, tuple] = {}
+        self._stirred: dict[str, bool] = {}
 
-    def update(self, present: dict,
-               now: float | None = None) -> list[tuple[str, float, tuple]]:
-        """present maps class -> (score, box). Returns what to report."""
+    def update(self, present: dict, moved: set | None = None,
+               now: float | None = None):
+        """present maps class -> (score, box); moved names those that stirred.
+
+        Returns (events, confirmed): what to report, and which classes are
+        present on a run that has seen movement. The second is what anyone
+        downstream should treat as really being there.
+        """
         now = time.monotonic() if now is None else now
+        moved = moved or set()
         events = []
+        confirmed = set()
 
         for name in set(self._hits) | set(present):
             if name not in present:
@@ -96,10 +165,19 @@ class Tracker:
                 # the same spot later is a new event rather than the old one.
                 self._hits[name] = 0
                 self._last_box.pop(name, None)
+                self._stirred.pop(name, None)
                 continue
 
             score, box = present[name]
             self._hits[name] = self._hits.get(name, 0) + 1
+            # Movement anywhere in the run counts, not movement in this frame.
+            # Someone who walks into view and then stands still moved when they
+            # arrived, and is no less there for having stopped.
+            if name in moved:
+                self._stirred[name] = True
+            if self.require_motion and not self._stirred.get(name):
+                continue
+            confirmed.add(name)
             if self._hits[name] < self.min_hits:
                 continue
             last = self._last_sent.get(name)
@@ -113,7 +191,7 @@ class Tracker:
             self._last_sent[name] = now
             self._last_box[name] = box
             events.append((name, score, box))
-        return events
+        return events, confirmed
 
 
 def frame_reader(source_url: str, transport: str, fps: float) -> subprocess.Popen:
@@ -148,11 +226,16 @@ class Detector(threading.Thread):
         self.on_frame = on_frame
         self.model = model
         self.relay_url = relay_url
-        self.tracker = Tracker(cfg.detect_min_hits, cfg.detect_cooldown)
+        self.tracker = Tracker(
+            cfg.detect_min_hits, cfg.detect_cooldown,
+            require_motion=getattr(cfg, "detect_motion", True),
+        )
+        self.motion = Motion(MOTION_NOISE)
         self.wanted = classes.expand(cfg.detect_types)
         self.error = ""
         self.frames = 0
         self._last_debug = 0.0
+        self._last_still = 0.0
         self._stop = threading.Event()
 
     def source(self) -> str:
@@ -242,19 +325,45 @@ class Detector(threading.Thread):
         if seen:
             self._log_candidates(seen)
 
+        # Which of them stirred since the last frame. Worked out here, once,
+        # rather than per candidate: the difference image is the same for all.
+        self.motion.update(frame)
+        moved = {name for name, (_, box) in best.items() if self.motion.moved(box)}
+        if DEBUG and best and not moved:
+            self._log_still(best)
+
+        events, confirmed = self.tracker.update(best, moved)
+
         if self.on_frame is not None:
             try:
-                self.on_frame({name: score for name, (score, _) in best.items()})
+                # Only what is confirmed: a shape the model found in a hedge
+                # that has not moved is not something to tell an NVR about.
+                self.on_frame({name: best[name][0] for name in confirmed})
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report presence: {exc}")
 
-        for name, score, box in self.tracker.update(best):
+        for name, score, box in events:
             coarse = classes.coarse_of(name)
             print(f"[detect] {name} ({score:.2f})")
             try:
-                self.on_event(name, score, coarse, box)
+                # The frame goes with it: a still has to be the moment the box
+                # describes, not one fetched a second later.
+                self.on_event(name, score, coarse, box, frame)
             except Exception as exc:  # noqa: BLE001 - a bad sink must not stop us
                 print(f"[detect] could not report {name}: {exc}")
+
+    def _log_still(self, best):
+        """Say when something was found but nothing moved, under DETECT_DEBUG.
+
+        This is the case that used to produce a phantom car at three in the
+        morning, so it is worth being able to watch it being thrown away.
+        """
+        now = time.monotonic()
+        if now - self._last_still < 2.0:
+            return
+        self._last_still = now
+        named = ", ".join(f"{name} {score:.2f}" for name, (score, _) in best.items())
+        print(f"[detect] ignored (nothing moved there): {named}")
 
     def _log_candidates(self, seen):
         """One line a second at most, so the log stays readable."""

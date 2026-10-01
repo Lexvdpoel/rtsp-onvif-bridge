@@ -66,6 +66,11 @@ DEFAULTS = {
     # YOLOX-S at 640, about four times the work for a better answer on
     # small and distant things.
     "detect_model": "fast",
+    # Only believe a detection once something in that part of the picture
+    # has actually changed. A model asked twice about the same still scene
+    # does not always answer the same way, and on a quiet drive at night a
+    # phantom car is the only thing a sudden new detection can be.
+    "detect_motion": True,
     "detect_fps": 3,
     "detect_confidence": 0.5,
     "detect_min_hits": 3,
@@ -193,7 +198,7 @@ _INT_FIELDS = {
 _FLOAT_FIELDS = {"detect_confidence"}
 _BOOL_FIELDS = {
     "enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect", "detect",
-    "clips",
+    "clips", "detect_motion",
 }
 _IMMUTABLE = {"id", "mac", "serial", "uuid", "created_at"}
 
@@ -310,6 +315,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "DETECT": "1" if cam.get("detect") else "0",
         "DETECT_TYPES": cam.get("detect_types") or "person",
         "DETECT_MODEL": cam.get("detect_model") or "fast",
+        "DETECT_MOTION": "1" if cam.get("detect_motion", True) else "0",
         "DETECT_FPS": str(cam.get("detect_fps") or 3),
         "DETECT_CONFIDENCE": str(cam.get("detect_confidence") or 0.5),
         "DETECT_MIN_HITS": str(cam.get("detect_min_hits") or 3),
