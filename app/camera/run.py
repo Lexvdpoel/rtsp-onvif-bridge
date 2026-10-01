@@ -82,6 +82,7 @@ class Config:
     detect_cooldown: int
     detect_model: str
     detect_motion: bool
+    detect_sensitivity: int
     event_hold: int
     clips: bool
     width: int
@@ -134,6 +135,7 @@ class Config:
             detect_cooldown=_env_int("DETECT_COOLDOWN", 30),
             detect_model=_env("DETECT_MODEL", "fast"),
             detect_motion=_env_bool("DETECT_MOTION", True),
+            detect_sensitivity=_env_int("DETECT_SENSITIVITY", 5),
             event_hold=_env_int("EVENT_HOLD", 8),
             clips=_env_bool("CLIPS", True),
             width=_env_int("VIDEO_WIDTH", 1920),
@@ -168,6 +170,10 @@ class State:
         self.transcode: dict = {}
         self.detections: list = []
         self.event_subscribers = 0
+        # The detector itself, once running, so the status file can report what
+        # it has been seeing without a second copy of the numbers to keep in
+        # step with it.
+        self.detector = None
 
     def refresh_from_interface(self):
         self.ip = net.read_ip()
@@ -214,6 +220,7 @@ def _status_payload(cfg: Config, state: State) -> dict:
         "transcode": state.transcode,
         "detections": state.detections[-20:],
         "event_subscribers": state.event_subscribers,
+        "motion": _motion_payload(cfg, state),
         "advertised": {
             "encoding": cfg.encoding,
             "width": cfg.width,
@@ -223,6 +230,32 @@ def _status_payload(cfg: Config, state: State) -> dict:
             "autodetect": cfg.autodetect,
         },
         "updated_at": time.time(),
+    }
+
+
+def _motion_payload(cfg: Config, state: State) -> dict:
+    """What the motion comparison has been seeing, for the camera card.
+
+    Shown next to the sensitivity slider because the two only mean anything
+    together: "last movement three days ago" on a driveway says the slider is
+    too low, and nothing else in the interface would have said so.
+    """
+    detector = state.detector
+    if detector is None:
+        return {"enabled": False}
+    looked, skipped = detector.looked, detector.skipped
+    total = looked + skipped
+    return {
+        "enabled": bool(cfg.detect and detector.require_motion),
+        "sensitivity": detector.sensitivity,
+        "noise": detector.motion.noise,
+        "area": detector.motion.area,
+        "last_at": detector.last_motion,
+        "frames": total,
+        "looked": looked,
+        # What the gate is actually saving, which is the honest answer to
+        # "is this doing anything".
+        "skipped_pct": round(100.0 * skipped / total) if total else 0,
     }
 
 
@@ -451,6 +484,7 @@ def main() -> int:
             relay_url = f"rtsp://127.0.0.1:{cfg.rtsp_port}/{path}"
         detector = detect_mod.Detector(cfg, on_detection, relay_url=relay_url,
                                        on_frame=events.note_presence)
+        state.detector = detector
         detector.start()
 
     state.status = "running"

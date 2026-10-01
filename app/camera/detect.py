@@ -34,17 +34,54 @@ DEBUG_FLOOR = float(os.environ.get("DETECT_DEBUG_FLOOR", "0.15"))
 # enough to stay cheap to decode.
 FRAME_SIZE = int(os.environ.get("DETECT_FRAME_SIZE", "640"))
 
-# How much a region has to change, in levels out of 255, before it counts as
-# having moved. Sensor noise on a dark scene sits well under this; raise it on a
-# camera whose picture crawls, lower it for something that moves very slowly.
-MOTION_NOISE = float(os.environ.get("DETECT_MOTION_NOISE", "4"))
+# Sensitivity, 1 to 10, as one number for the two thresholds underneath it.
+#
+# Both move together because they fail together: a camera that misses a slow
+# visitor is usually one where both the per-region threshold and the minimum
+# changed area are too high for the scene, and asking an operator which of the
+# two to lower is asking them to debug the algorithm. One slider, ten steps,
+# each about a third apart -- far enough that moving one step is worth doing.
+#
+#   noise -- how much a region has to change, in levels out of 255, before it
+#            counts as having moved. Sensor noise on a dark scene sits well
+#            under the middle of this range.
+#   area  -- how much of the picture has to change like that before the frame
+#            is worth running the model over, as a fraction. The comparison
+#            happens on a quarter-scale copy, so a 640px frame is 160x160 =
+#            25600 cells; the default comes to 12 of them, and a person at the
+#            far end of a driveway covers several times that.
+#
+# Step 5 is the default and is exactly what the thresholds were before the
+# slider existed, so nobody's camera changed behaviour by gaining a setting.
+SENSITIVITY = {
+    1:  (12.0, 0.0040),   # only something large and fast crossing the view
+    2:  (10.0, 0.0030),
+    3:  (8.0,  0.0020),
+    4:  (6.0,  0.0010),
+    5:  (4.0,  0.0005),   # the default
+    6:  (3.0,  0.0003),
+    7:  (2.5,  0.0002),
+    8:  (2.0,  0.0001),
+    9:  (1.5,  0.00007),
+    10: (1.0,  0.00005),  # a cat at the end of the garden, and every shadow
+}
+DEFAULT_SENSITIVITY = 5
 
-# And how much of the picture has to change like that before the frame is worth
-# running the model over, as a fraction of it. The comparison happens on a
-# quarter-scale copy, so a 640px frame is 160x160 = 25600 cells and the default
-# comes to 12 of them -- a person at the far end of a driveway, already smaller
-# than anything you would want reported, still covers several times that.
-MOTION_AREA = float(os.environ.get("DETECT_MOTION_AREA", "0.0005"))
+
+def thresholds(level) -> tuple[float, float]:
+    """The (noise, area) pair for a sensitivity step, clamped to the table."""
+    try:
+        step = int(level)
+    except (TypeError, ValueError):
+        step = DEFAULT_SENSITIVITY
+    step = max(1, min(10, step))
+    return SENSITIVITY[step]
+
+
+# The environment still wins where it is set, which is how a camera with an
+# unusual picture gets a value the slider cannot reach.
+MOTION_NOISE = float(os.environ.get("DETECT_MOTION_NOISE") or 0) or 0.0
+MOTION_AREA = float(os.environ.get("DETECT_MOTION_AREA") or 0) or 0.0
 
 # While something is standing in view the model is run again every so often even
 # on a still picture, to find out whether it is still there. Without that, a
@@ -69,7 +106,13 @@ class Motion:
 
     SCALE = 4
 
-    def __init__(self, noise: float = 4.0, area: float = MOTION_AREA):
+    @classmethod
+    def for_level(cls, level, noise: float = 0.0, area: float = 0.0) -> "Motion":
+        """Built from a sensitivity step, with explicit overrides winning."""
+        step_noise, step_area = thresholds(level)
+        return cls(noise or step_noise, area or step_area)
+
+    def __init__(self, noise: float = 4.0, area: float = 0.0005):
         # Mean absolute difference, in levels out of 255, below which a region
         # counts as unchanged. Sensor noise at night sits a long way under this.
         self.noise = noise
@@ -101,6 +144,10 @@ class Motion:
         if self._diff is None:
             return 0
         return max(4, int(self.area * self._diff.size))
+
+    def has_reference(self) -> bool:
+        """Whether there was a frame to compare against at all."""
+        return self._diff is not None
 
     def anywhere(self) -> bool:
         """Whether anything in the picture at all changed.
@@ -271,7 +318,8 @@ class Detector(threading.Thread):
             cfg.detect_min_hits, cfg.detect_cooldown,
             require_motion=getattr(cfg, "detect_motion", True),
         )
-        self.motion = Motion(MOTION_NOISE)
+        self.sensitivity = getattr(cfg, "detect_sensitivity", DEFAULT_SENSITIVITY)
+        self.motion = Motion.for_level(self.sensitivity, MOTION_NOISE, MOTION_AREA)
         self.require_motion = getattr(cfg, "detect_motion", True)
         self.wanted = classes.expand(cfg.detect_types)
         self.error = ""
@@ -282,6 +330,9 @@ class Detector(threading.Thread):
         self._last_still = 0.0
         self._last_skip = 0.0
         self._last_look = 0.0
+        # Wall clock, because this one is shown to a person: "two minutes ago"
+        # has to survive the container being asked about from outside it.
+        self.last_motion = 0.0
         # What was confirmed present the last time the model actually ran. A
         # skipped frame carries it forward: nothing changed, so nothing about
         # what is standing there has changed either.
@@ -365,6 +416,8 @@ class Detector(threading.Thread):
         # hundred or more to put through the model, so a camera watching an
         # empty yard costs almost nothing until something walks into it.
         self.motion.update(frame)
+        if self.motion.anywhere() and self.motion.has_reference():
+            self.last_motion = time.time()
         if self.require_motion and not self.motion.anywhere() and not self._overdue():
             self.skipped += 1
             if DEBUG:

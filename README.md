@@ -454,10 +454,38 @@ encoder stalled, not because the yard is quiet — cannot leave motion stuck on.
 
 Turn it off per camera with **Only when something moved** — for a gate you want
 told about whether or not the car arrived while you were looking. That costs the
-saving too: the model then runs on every frame, all day. Tune the thresholds with
-`DETECT_MOTION_NOISE` (4 levels out of 255, below which a region counts as
-unchanged) and `DETECT_MOTION_AREA` (0.0005 of the picture, about twelve cells of
-a 640px frame, below which the whole frame counts as quiet).
+saving too: the model then runs on every frame, all day.
+
+#### How little counts as movement
+
+**Movement sensitivity** is one slider from 1 to 10, and 5 is the middle. It sets
+two thresholds together, because they fail together: a camera that misses a slow
+visitor is usually one where both are too high for the scene, and asking which of
+the two to lower is asking someone to debug the algorithm.
+
+| Step | A region counts as moved at | The frame is looked at from |
+|---|---|---|
+| 1 | 12 levels out of 255 | ~102 of 25600 cells |
+| 5 *(default)* | 4 levels | ~12 cells |
+| 10 | 1 level | 4 cells |
+
+Lower it for a camera facing trees, a road, or a bright reflection. Raise it if it
+keeps missing someone walking slowly, or a cat at the end of the garden. Step 5 is
+exactly what the thresholds were before the slider existed, so no camera changed
+behaviour by gaining a setting.
+
+`DETECT_MOTION_NOISE` and `DETECT_MOTION_AREA` still override it where they are
+set, which is how a camera with an unusual picture gets a value the slider cannot
+reach.
+
+#### Whether it is working
+
+Each camera card carries a **Last movement** line: when the comparison last saw
+anything change, which step it is running at, and what share of frames the model
+was spared. That is the one place the slider means something. "Last movement 3
+days ago" on a driveway says the sensitivity is set too low, and nothing else in
+the interface would have said so; a skip share near zero on a quiet camera says
+the same thing from the other end.
 
 ### The still is the frame the box describes
 

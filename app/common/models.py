@@ -71,6 +71,11 @@ DEFAULTS = {
     # does not always answer the same way, and on a quiet drive at night a
     # phantom car is the only thing a sudden new detection can be.
     "detect_motion": True,
+    # How little has to change before that counts as movement, 1 to 10.
+    # Five is the middle, and is exactly what the thresholds were before the
+    # setting existed. Lower it for a camera facing trees or a busy road,
+    # raise it for one that keeps missing a slow visitor.
+    "detect_sensitivity": 5,
     "detect_fps": 3,
     "detect_confidence": 0.5,
     "detect_min_hits": 3,
@@ -180,6 +185,7 @@ def new_camera(payload: dict | None = None, taken: set[str] | None = None) -> di
 
 _INT_FIELDS = {
     "detect_fps",
+    "detect_sensitivity",
     "detect_min_hits",
     "detect_cooldown",
     "event_hold",
@@ -195,6 +201,10 @@ _INT_FIELDS = {
     "fps_sub",
     "bitrate_sub",
 }
+# Where a number outside the range is a mistake rather than a preference, it is
+# clamped rather than refused: the slider cannot produce one, so anything else
+# came from a hand-written request or an older stored camera.
+_INT_RANGE = {"detect_sensitivity": (1, 10)}
 _FLOAT_FIELDS = {"detect_confidence"}
 _BOOL_FIELDS = {
     "enabled", "require_auth", "proxy", "snapshot_enabled", "autodetect", "detect",
@@ -211,9 +221,13 @@ def sanitize(payload: dict) -> dict:
             continue
         if key in _INT_FIELDS:
             try:
-                out[key] = int(value)
+                number = int(value)
             except (TypeError, ValueError):
                 continue
+            low, high = _INT_RANGE.get(key, (None, None))
+            if low is not None:
+                number = max(low, min(high, number))
+            out[key] = number
         elif key in _FLOAT_FIELDS:
             try:
                 out[key] = float(value)
@@ -316,6 +330,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "DETECT_TYPES": cam.get("detect_types") or "person",
         "DETECT_MODEL": cam.get("detect_model") or "fast",
         "DETECT_MOTION": "1" if cam.get("detect_motion", True) else "0",
+        "DETECT_SENSITIVITY": str(cam.get("detect_sensitivity") or 5),
         "DETECT_FPS": str(cam.get("detect_fps") or 3),
         "DETECT_CONFIDENCE": str(cam.get("detect_confidence") or 0.5),
         "DETECT_MIN_HITS": str(cam.get("detect_min_hits") or 3),

@@ -322,6 +322,16 @@
     border: 1px solid var(--border); background: var(--bg); color: var(--muted);
   }
   .picker button.on { border-color: var(--accent); color: var(--accent); }
+  .slider { display: flex; align-items: center; gap: 10px; }
+  .slider input[type=range] { flex: 1; accent-color: var(--accent); min-width: 0; }
+  .slider output {
+    min-width: 7.5em; text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--muted); font-size: 13px;
+  }
+  .scale {
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 12px; margin-top: 2px;
+  }
   .picker button.group { font-weight: 600; }
   .picker .sep { width: 100%; height: 0; }
   pre.logs {
@@ -696,6 +706,16 @@
           <div class="check">
             <input type="checkbox" id="f-detect-motion" name="detect_motion" checked>
             <label for="f-detect-motion" style="margin:0">Only when something moved</label>
+          </div>
+          <div class="wide">
+            <label for="f-detect-sensitivity">Movement sensitivity</label>
+            <div class="slider">
+              <input type="range" id="f-detect-sensitivity" name="detect_sensitivity"
+                     min="1" max="10" step="1" value="5">
+              <output id="sensitivityOut" for="f-detect-sensitivity"></output>
+            </div>
+            <div class="scale"><span>only something large</span><span>every shadow</span></div>
+            <div class="hint" id="sensitivityHint"></div>
           </div>
           <div class="wide hint">
             A model asked twice about the same still picture does not always answer the
@@ -1108,13 +1128,71 @@ $("#detectPicker").addEventListener("click", (event) => {
 
 $("#f-detect-types").addEventListener("input", renderDetectPicker);
 
+// The same ten steps the camera uses, so the hint can say what the slider is
+// actually about to do rather than describing it in adjectives alone.
+const SENSITIVITY = {
+  1:  ["Lowest", 12, 0.0040],
+  2:  ["Very low", 10, 0.0030],
+  3:  ["Low", 8, 0.0020],
+  4:  ["Below normal", 6, 0.0010],
+  5:  ["Normal", 4, 0.0005],
+  6:  ["Above normal", 3, 0.0003],
+  7:  ["High", 2.5, 0.0002],
+  8:  ["Very high", 2, 0.0001],
+  9:  ["Near maximum", 1.5, 0.00007],
+  10: ["Maximum", 1, 0.00005],
+};
+
+function renderSensitivity() {
+  const slider = $("#f-detect-sensitivity");
+  const on = $("#f-detect-motion").checked;
+  slider.disabled = !on;
+  const [word, noise, area] = SENSITIVITY[slider.value] || SENSITIVITY[5];
+  $("#sensitivityOut").textContent = `${slider.value}/10 · ${word}`;
+  // 160x160 cells is a 640px frame compared at quarter scale, which is what
+  // the camera actually does; a count of cells means more than a fraction.
+  const cells = Math.max(4, Math.round(area * 160 * 160));
+  $("#sensitivityHint").textContent = on
+    ? `A patch counts as moved once it changes by ${noise} levels out of 255, and `
+      + `the frame is worth looking at once about ${cells} of its 25600 cells have. `
+      + `Lower this for a camera facing trees, a road or a bright reflection; raise it `
+      + `if it keeps missing someone walking slowly, or a cat.`
+    : `Not used while the rule above is off: every frame goes through the model.`;
+}
+
+$("#f-detect-sensitivity").addEventListener("input", renderSensitivity);
+$("#f-detect-motion").addEventListener("change", renderSensitivity);
+
+function ago(epochSeconds) {
+  // Coarse on purpose. Nobody reading a camera card needs "4 minutes and 12
+  // seconds"; they need to know whether it was just now or last Tuesday.
+  const secs = Math.max(0, Math.round(Date.now() / 1000 - epochSeconds));
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
 function detectText(cam) {
   if (!cam.detect) return "off";
   const seen = ((cam.runtime || {}).detections || []);
   if (!seen.length) return `watching for ${cam.detect_types}`;
   const last = seen[seen.length - 1];
-  const ago = Math.max(0, Math.round(Date.now() / 1000 - last.at));
-  return `${last.type} ${ago}s ago (${seen.length} recent)`;
+  return `${last.type} ${ago(last.at)} (${seen.length} recent)`;
+}
+
+function motionText(cam) {
+  // The slider is only meaningful next to this. "Last movement 3 days ago" on
+  // a driveway says the sensitivity is set too low, and nothing else in the
+  // interface would have said so.
+  const m = (cam.runtime || {}).motion || {};
+  if (!m.enabled) return "not required (model runs on every frame)";
+  const level = `sensitivity ${m.sensitivity}/10`;
+  if (!m.frames) return `${level} — waiting for frames`;
+  const saved = `model skipped on ${m.skipped_pct}% of frames`;
+  if (!m.last_at) return `${level} — nothing has moved yet, ${saved}`;
+  return `${ago(m.last_at)} — ${level}, ${saved}`;
 }
 
 // ---------------------------------------------------------------- the views
@@ -2007,6 +2085,7 @@ function render() {
           ${field("Source", cam.source_url, true)}
           ${field("Detected stream", detectedText(cam))}
           ${field("Detection", detectText(cam))}
+          ${cam.detect ? field("Last movement", motionText(cam)) : ""}
           ${cam.detect ? field("ONVIF events", eventsText(cam)) : ""}
           ${field("Output", outputText(cam))}
           ${field("Encoder", encoderText(cam))}
@@ -2212,6 +2291,7 @@ function fillForm(cam) {
     else element.value = source[element.name] == null ? "" : source[element.name];
   }
   renderDetectPicker();
+  renderSensitivity();
 }
 
 async function openEdit(cam) {
