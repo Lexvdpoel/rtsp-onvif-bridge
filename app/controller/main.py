@@ -307,7 +307,13 @@ def _get_or_404(cam_id: str) -> dict:
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open(os.path.join(TEMPLATE_DIR, "index.html"), encoding="utf-8") as fh:
-        return HTMLResponse(fh.read())
+        # Never cached. The page is the whole interface, so a stale copy means an
+        # upgraded controller still showing yesterday's settings -- and the
+        # obvious conclusion is that the upgrade did not work.
+        return HTMLResponse(fh.read(), headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        })
 
 
 @app.get("/api/status")
