@@ -99,6 +99,11 @@ def _xml_escape(value: str) -> str:
     )
 
 
+def _short(image_id: str) -> str:
+    """The recognisable part of a Docker image id, or "" when there is none."""
+    return (image_id or "").split(":")[-1][:12]
+
+
 class DockerError(RuntimeError):
     pass
 
@@ -253,6 +258,11 @@ class DockerManager:
             "started_at": container.attrs.get("State", {}).get("StartedAt", ""),
             "restarts": container.attrs.get("RestartCount", 0),
             "stale_image": bool(current and running_image and running_image != current),
+            # Both ids, so "it still says update pending" is a question with an
+            # answer rather than a guess. Trimmed to the part a person can
+            # compare at a glance.
+            "image": _short(running_image),
+            "image_wanted": _short(current),
         }
 
     def create(self, cam: dict):

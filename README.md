@@ -227,6 +227,33 @@ docker compose up -d
 Open `http://<docker-host>:8080`. The macvlan network `camlan` is created
 automatically on first start.
 
+### Updating
+
+```bash
+docker build -t rtsp-onvif-bridge:latest .
+```
+
+A rebuilt image does not reach anything that is already running. A container
+keeps the image it was *created from* until it is replaced, and `docker restart`
+does not replace it — the container comes back on exactly the code it went down
+with. That is invisible from the outside, and looks precisely like a fix that
+did not work.
+
+So, after building:
+
+* **The controller** has to be removed and created again (`docker rm -f
+  onvif-bridge-controller`, then the Unraid template or the `docker run` above).
+  A restart is not enough.
+* **The cameras** are replaced from the interface. Any container still on an
+  older image shows **update pending**, with an **Update** button on its card and
+  an **Update N cameras** button in the header to do the lot. The card also
+  prints both image ids, so a camera that insists it is out of date is a question
+  with an answer.
+
+Camera containers also have to be replaced whenever a release adds a setting:
+the configuration is passed in as environment variables, which are fixed when
+the container is created.
+
 ### First run: create an account
 
 The first time you open the UI it asks for a username and password. These protect

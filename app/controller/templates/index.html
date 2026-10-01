@@ -400,6 +400,8 @@
   <div class="spacer"></div>
   <button id="backupBtn">Backup</button>
   <button id="restoreBtn">Restore</button>
+  <button id="updateAllBtn" class="primary" hidden
+          title="Replace every container still running an older image">Update all</button>
   <button id="addBtn" class="primary">Add camera</button>
   <button id="settingsBtn" class="link" title="Storage and other settings">Settings</button>
   <button id="accountBtn" class="link" title="Account">Account</button>
@@ -1042,7 +1044,11 @@ function cameraHealth(cam) {
   // A container keeps the image it was created from. After a rebuild it is
   // still running the old code, which looks exactly like the new code not
   // working -- so it says so rather than leaving you to wonder.
-  if (docker.stale_image) return { cls: "warn", label: "restart to update" };
+  //
+  // It does not say "restart", because restarting is exactly what does not
+  // work: `docker restart` keeps the image the container was created from.
+  // The container has to be replaced, which is what Update does.
+  if (docker.stale_image) return { cls: "warn", label: "update pending" };
   return { cls: "ok", label: "Running" };
 }
 
@@ -1186,7 +1192,14 @@ function motionText(cam) {
   // The slider is only meaningful next to this. "Last movement 3 days ago" on
   // a driveway says the sensitivity is set too low, and nothing else in the
   // interface would have said so.
-  const m = (cam.runtime || {}).motion || {};
+  const runtime = cam.runtime || {};
+  const m = runtime.motion;
+  // Absent is not the same as off, and saying "not required" for a camera that
+  // simply has not answered sends you looking in the wrong place entirely.
+  if (!runtime.updated_at) return "waiting for the camera";
+  if (m === undefined) {
+    return "this container is running an older build — press Update";
+  }
   if (!m.enabled) return "not required (model runs on every frame)";
   const level = `sensitivity ${m.sensitivity}/10`;
   if (!m.frames) return `${level} — waiting for frames`;
@@ -2037,6 +2050,46 @@ function flowBlock(cam) {
     </div>`;
 }
 
+function staleCameras() {
+  return cameras.filter((c) => (c.docker || {}).stale_image);
+}
+
+function renderUpdateAll() {
+  const stale = staleCameras();
+  const button = $("#updateAllBtn");
+  button.hidden = !stale.length;
+  button.textContent = stale.length === 1
+    ? "Update 1 camera" : `Update ${stale.length} cameras`;
+}
+
+$("#updateAllBtn").addEventListener("click", async () => {
+  const stale = staleCameras();
+  if (!stale.length) return;
+  const button = $("#updateAllBtn");
+  button.disabled = true;
+  let done = 0;
+  try {
+    // One at a time. Replacing several containers at once means several DHCP
+    // leases and several streams coming up together, and a camera that fails
+    // should not take the rest of the run with it.
+    for (const cam of stale) {
+      try {
+        await api(`/api/cameras/${cam.id}/restart`, { method: "POST" });
+        done += 1;
+      } catch (err) {
+        if (err instanceof AuthError) throw err;
+        toast(`${cam.name}: ${err.message}`, true);
+      }
+    }
+    toast(`Updated ${done} of ${stale.length}`);
+    await refresh();
+  } catch (err) {
+    if (!(err instanceof AuthError)) toast(err.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 function render() {
   // The live grid follows the same camera list, but only rebuilds when the set
   // of tiles would change: redrawing it on every poll would restart every
@@ -2068,6 +2121,11 @@ function render() {
           <button data-action="${cam.enabled ? "stop" : "start"}" data-id="${cam.id}">
             ${cam.enabled ? "Stop" : "Start"}
           </button>
+          ${(cam.docker || {}).stale_image
+            ? `<button data-action="restart" data-id="${cam.id}" class="primary"
+                 title="Replace the container so it runs the image you just built">
+                 Update</button>`
+            : ""}
           <button data-action="restart" data-id="${cam.id}">Restart</button>
           ${cam.detect && cam.clips
             ? `<button data-action="events" data-id="${cam.id}">Detections</button>`
@@ -2087,6 +2145,9 @@ function render() {
           ${field("Detection", detectText(cam))}
           ${cam.detect ? field("Last movement", motionText(cam)) : ""}
           ${cam.detect ? field("ONVIF events", eventsText(cam)) : ""}
+          ${(cam.docker || {}).stale_image
+            ? field("Image", `running ${cam.docker.image || "?"}, built ${cam.docker.image_wanted || "?"}`)
+            : ""}
           ${field("Output", outputText(cam))}
           ${field("Encoder", encoderText(cam))}
           ${field("Rate control", rateModeText(cam))}
@@ -2146,6 +2207,7 @@ async function refresh() {
     cameras = await api("/api/cameras");
     cameras.forEach(recordSample);
     renderKpis();
+    renderUpdateAll();
     render();
   } catch (err) {
     if (!(err instanceof AuthError)) toast(err.message, true);
