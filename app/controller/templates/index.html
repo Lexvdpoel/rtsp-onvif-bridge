@@ -2040,6 +2040,12 @@ function flowBlock(cam) {
         <div class="row" style="color:var(--muted);font-size:12px;">
           ${stats.readers} reader${stats.readers === 1 ? "" : "s"}
         </div>
+        ${stats.local_readers
+          ? `<div class="row" style="color:var(--muted);font-size:12px;"
+                  title="Detection, the live view and snapshots read the relay inside the container. Those bytes never cross the network, so they are not counted as Out.">
+               + ${stats.local_readers} internal (${formatBits(stats.local_bps || 0)})
+             </div>`
+          : ""}
         ${transcoding ? '<div class="row" style="color:var(--muted);font-size:12px;">'
           + "In is measured after encoding, not at the source.</div>" : ""}
       </div>
@@ -2161,6 +2167,9 @@ function renderKpis() {
   const active = cameras.filter((c) => c.enabled && ((c.runtime || {}).stats || {}).available);
   const totalIn = active.reduce((sum, c) => sum + (c.runtime.stats.in_bps || 0), 0);
   const totalOut = active.reduce((sum, c) => sum + (c.runtime.stats.out_bps || 0), 0);
+  // Readers that came over the network. The camera's own detector and live
+  // view read the relay too, but counting those would say the link is carrying
+  // traffic that never touched it.
   const readers = active.reduce((sum, c) => sum + (c.runtime.stats.readers || 0), 0);
 
   const totals = history.get("__total__") || { in: [], out: [] };

@@ -802,6 +802,18 @@ what arrives from the source, **out** is what goes to the NVRs. With two viewers
 one camera, outgoing is roughly double incoming. With the relay off, the traffic
 does not pass through the container and there is nothing to measure.
 
+**Out is what crossed the network**, which is not the same as what the relay
+handed out. The camera reads its own relay for several things — the detector, the
+live view in this interface, every snapshot — all over loopback, all counted by
+the relay as bytes sent. Those readers are identified by their address and kept
+out of **out**; they appear underneath as *+ N internal*, with what they cost. A
+camera with detection running and nobody watching it reports no outgoing traffic
+at all, which is the truth.
+
+If the relay is too old to list its sessions, there is nothing to tell them apart
+by and everything it sent counts as outgoing. Overstating it is the lesser error:
+a figure that is too low would say a link has room it does not have.
+
 When a stream is being converted, **in** measures what comes out of ffmpeg rather
 than what the source sends — the relay receives the encoded result. The UI says so.
 
