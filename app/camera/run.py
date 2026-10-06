@@ -98,6 +98,7 @@ class Config:
     hwaccel: str
     encode_bitrate: int
     encode_preset: str
+    encode_rate_mode: str
     audio: str
     # Replaced by the probed codec when autodetect is on, or by the target
     # codec when the stream is re-encoded.
@@ -151,6 +152,7 @@ class Config:
             hwaccel=_env("HWACCEL", "none"),
             encode_bitrate=_env_int("ENCODE_BITRATE", 4096),
             encode_preset=_env("ENCODE_PRESET", "veryfast"),
+            encode_rate_mode=_env("ENCODE_RATE_MODE", "vbr"),
             audio=_env("AUDIO", "copy"),
         )
 
@@ -323,6 +325,7 @@ def _relay_paths(cfg: Config, state: State) -> dict[str, dict]:
                 hwaccel=cfg.hwaccel,
                 bitrate_kbps=cfg.encode_bitrate if not sub else cfg.bitrate_sub,
                 preset=cfg.encode_preset,
+                rate_mode=cfg.encode_rate_mode,
                 transport=cfg.rtsp_transport,
                 audio=cfg.audio,
             )

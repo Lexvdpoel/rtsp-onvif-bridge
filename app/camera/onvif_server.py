@@ -199,6 +199,12 @@ class OnvifService:
 
     def _video_encoder_config(self, profile: dict, tag: str = "tt:VideoEncoderConfiguration") -> str:
         encoding = getattr(self.cfg, "encoding", "H264") or "H264"
+        # Only a re-encoded stream has a rate control of ours to report. A
+        # relayed one carries whatever the camera decided, which we do not know.
+        constant = (
+            getattr(self.cfg, "output_codec", "copy") in ("h264", "h265")
+            and getattr(self.cfg, "encode_rate_mode", "vbr") == "cbr"
+        )
         # The codec-specific block only belongs there for the codec in use.
         codec_block = (
             "<tt:H264><tt:GovLength>30</tt:GovLength>"
@@ -216,7 +222,13 @@ class OnvifService:
             f"<tt:Height>{profile['height']}</tt:Height>"
             "</tt:Resolution>"
             "<tt:Quality>5</tt:Quality>"
-            "<tt:RateControl>"
+            # Media2 allows the rate control to be stated; Media1 has no such
+            # element, so it is left off there rather than invented. An NVR that
+            # plans its disk from the advertised bitrate is right to do so only
+            # when the rate is constant, and this is where it finds out.
+            + ("<tt:RateControl "
+               f'ConstantBitRate="{"true" if constant else "false"}">'
+               if tag.startswith("tr2:") else "<tt:RateControl>") +
             f"<tt:FrameRateLimit>{profile['fps']}</tt:FrameRateLimit>"
             "<tt:EncodingInterval>1</tt:EncodingInterval>"
             f"<tt:BitrateLimit>{profile['bitrate']}</tt:BitrateLimit>"

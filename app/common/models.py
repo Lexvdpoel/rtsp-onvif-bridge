@@ -40,6 +40,12 @@ DEFAULTS = {
     "hwaccel": "auto",
     "encode_bitrate": 4096,
     "encode_preset": "veryfast",
+    # How the encoder spends that bitrate. "vbr" treats it as a ceiling --
+    # a still scene costs almost nothing -- and "cbr" sends the same rate
+    # whether anything is happening or not, which is what a link with a
+    # fixed budget, or an NVR planning its disk from the advertised rate,
+    # actually needs. Only applies when the stream is re-encoded.
+    "encode_rate_mode": "vbr",
     "audio": "copy",
     "manufacturer": "RTSP-ONVIF-Bridge",
     "model": "VirtualCam",
@@ -288,6 +294,8 @@ def validate(cam: dict) -> list[str]:
         errors.append("Output codec must be copy, h264 or h265.")
     if cam.get("hwaccel") not in ("auto", "none", "vaapi", "qsv", "nvenc"):
         errors.append("Encoder must be auto, none, vaapi, qsv or nvenc.")
+    if cam.get("encode_rate_mode") not in ("vbr", "cbr"):
+        errors.append("Encoder rate control must be vbr or cbr.")
     if cam.get("audio") not in ("copy", "none"):
         errors.append("Audio must be copy or none.")
     if not 64 <= int(cam.get("encode_bitrate", 4096)) <= 100000:
@@ -324,6 +332,7 @@ def env_for(cam: dict, state_dir: str = "/state") -> dict:
         "HWACCEL": cam.get("hwaccel") or "auto",
         "ENCODE_BITRATE": str(cam.get("encode_bitrate") or 4096),
         "ENCODE_PRESET": cam.get("encode_preset") or "veryfast",
+        "ENCODE_RATE_MODE": cam.get("encode_rate_mode") or "vbr",
         "AUDIO": cam.get("audio") or "copy",
         "SNAPSHOT": "1" if cam["snapshot_enabled"] else "0",
         "DETECT": "1" if cam.get("detect") else "0",

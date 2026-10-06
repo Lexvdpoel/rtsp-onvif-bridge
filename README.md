@@ -814,13 +814,45 @@ If the relay is too old to list its sessions, there is nothing to tell them apar
 by and everything it sent counts as outgoing. Overstating it is the lesser error:
 a figure that is too low would say a link has room it does not have.
 
-When a stream is being converted, **in** measures what comes out of ffmpeg rather
-than what the source sends — the relay receives the encoded result. The UI says so.
+**When a stream is being converted, in is measured at the network interface.**
+ffmpeg pulls from the camera and publishes the *result* into the relay, so what
+the relay received is the encoded rate — the one figure that is certainly not
+what the camera sent. The kernel's own byte counters do not care how many
+processes are in between: they count what arrived on the wire. The card says
+which of the two it is showing.
 
-**CBR or VBR** is inferred, not read: RTSP does not report which rate control the
-source uses. The bridge looks at how much the measured bitrate varies over the last
-two minutes; within 8% of the mean it calls it CBR. The percentage is shown so you
-can judge how clear-cut the case is.
+That counter is per interface rather than per stream, so a camera offering a
+main and a sub stream reports them together, and acknowledgements for what is
+going out are included — a few percent at most. It is the only measurement
+available that is not downstream of the encoder.
+
+**The source's CBR or VBR is inferred, not read**: RTSP does not report which rate
+control a camera uses. The bridge looks at how much the measured bitrate varies
+over the last two minutes; within 8% of the mean it calls it CBR. The percentage
+is shown so you can judge how clear-cut the case is.
+
+**What the bridge itself encodes at is not inferred — it is set.** Under
+**Rate control**, for cameras whose stream is actually re-encoded:
+
+* **Variable** treats the bitrate as a ceiling. A still scene costs almost
+  nothing and a busy one is allowed up to the figure you set: fewer bytes stored
+  and a better picture for the same average. This is what the encoder did before
+  the setting existed, so no camera changes behaviour by gaining one.
+* **Constant** sends that rate whether anything is happening or not, padding if
+  it has to. Wasteful, and the right answer when the link has a fixed budget, or
+  when an NVR sizes its disk from the advertised bitrate — a stream that triples
+  when a lorry goes past is the one that drops frames.
+
+Each encoder spells this differently and none of them infer it: x264 is given
+`nal-hrd=cbr`, x265 `strict-cbr`, NVENC `-rc cbr`, VAAPI `-rc_mode CBR`. Intel
+QuickSync has no such switch — it reads the rates it was given, and a ceiling
+equal to the target reads as constant, so there it behaves close to constant
+whichever you pick.
+
+The choice is also advertised over ONVIF Media2, as `ConstantBitRate` on the
+video encoder configuration, so an NVR that plans storage can read it. Media1
+has no such element, so nothing is invented there. A relayed stream reports
+false: its rate control belongs to the camera, and we do not know what it is.
 
 ## Backup and restore
 

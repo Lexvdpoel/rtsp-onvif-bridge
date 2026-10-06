@@ -21,6 +21,7 @@ is not the same thing.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -69,6 +70,69 @@ class Sessions:
             if sent >= previous:
                 self.total += sent - previous
         self._seen = dict(current)
+
+
+class LinkStats:
+    """What actually crossed the camera's network interface.
+
+    The relay's counters measure the relay. When a stream is re-encoded, ffmpeg
+    pulls from the camera and publishes the *result* into the relay, so what the
+    relay received is the encoded rate -- the one figure that is certainly not
+    what the camera sent. The kernel's own byte counters do not care how many
+    processes are involved: they count what arrived on the wire.
+
+    It is a per-interface figure rather than a per-stream one, so a camera
+    offering a main and a sub stream reports them together, and acknowledgements
+    for what we are sending out are included -- a few percent at most. It is the
+    only measurement available that is not downstream of the encoder.
+    """
+
+    def __init__(self, iface: str = ""):
+        self.iface = iface or os.environ.get("CAM_IFACE", "eth0")
+        self.in_bps = 0.0
+        self.out_bps = 0.0
+        self.available = False
+        self._last: tuple[float, int, int] | None = None
+
+    def path(self, direction: str) -> str:
+        return f"/sys/class/net/{self.iface}/statistics/{direction}_bytes"
+
+    def read(self) -> tuple[int, int] | None:
+        try:
+            with open(self.path("rx")) as fh:
+                received = int(fh.read().strip())
+            with open(self.path("tx")) as fh:
+                sent = int(fh.read().strip())
+        except (OSError, ValueError):
+            return None
+        return received, sent
+
+    def update(self, now: float, counters: tuple[int, int] | None = None):
+        counters = self.read() if counters is None else counters
+        if counters is None:
+            self.available = False
+            return
+        received, sent = counters
+        previous, self._last = self._last, (now, received, sent)
+        if previous is None:
+            return
+        elapsed = now - previous[0]
+        if elapsed <= 0:
+            return
+        if received < previous[1] or sent < previous[2]:
+            # The interface was recreated; start again rather than report a spike.
+            return
+        self.available = True
+        self.in_bps = (received - previous[1]) * 8 / elapsed
+        self.out_bps = (sent - previous[2]) * 8 / elapsed
+
+    def snapshot(self) -> dict:
+        return {
+            "available": self.available,
+            "iface": self.iface,
+            "in_bps": round(self.in_bps),
+            "out_bps": round(self.out_bps),
+        }
 
 
 class PathStats:
@@ -171,6 +235,7 @@ class StatsCollector(threading.Thread):
         super().__init__(name="relay-stats", daemon=True)
         self.api_url = api_url
         self.sessions_url = sessions_url
+        self.link = LinkStats()
         self.paths: dict[str, PathStats] = {}
         self.available = False
         self.error = ""
@@ -179,6 +244,11 @@ class StatsCollector(threading.Thread):
 
     def run(self):
         while not self._stop.wait(SAMPLE_SECONDS):
+            # Sampled whatever the relay says: it is the one figure that stays
+            # true when a stream is being re-encoded, and it costs two file
+            # reads.
+            with self._lock:
+                self.link.update(time.monotonic())
             try:
                 payload = self._fetch()
             except Exception as exc:  # noqa: BLE001 - reported, never fatal
@@ -254,11 +324,13 @@ class StatsCollector(threading.Thread):
             paths = {name: stats.snapshot() for name, stats in self.paths.items()}
             available = self.available
             error = self.error
+            link = self.link.snapshot()
 
         return {
             "available": available,
             "error": error,
             "paths": paths,
+            "link": link,
             "in_bps": sum(p["in_bps"] for p in paths.values()),
             "out_bps": sum(p["out_bps"] for p in paths.values()),
             "local_bps": sum(p["local_bps"] for p in paths.values()),

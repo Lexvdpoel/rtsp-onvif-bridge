@@ -618,6 +618,24 @@
             </select>
           </div>
           <div>
+            <label for="f-encode-rate-mode">Rate control</label>
+            <select id="f-encode-rate-mode" name="encode_rate_mode">
+              <option value="vbr">Variable — the bitrate is a ceiling</option>
+              <option value="cbr">Constant — the same rate, busy or not</option>
+            </select>
+          </div>
+          <div class="wide hint">
+            Only applies when the stream is actually re-encoded. <strong>Variable</strong>
+            spends almost nothing on a still scene and is allowed up to the figure above
+            when something happens, which is fewer bytes stored and a better picture for
+            the same average. <strong>Constant</strong> sends that rate whether anything is
+            happening or not, padding if it has to — wasteful, and the right answer when
+            the link has a fixed budget or an NVR sizes its disk from the advertised rate.
+            A stream that triples when a lorry goes past is the one that drops frames.
+            Intel QuickSync has no switch for this and infers it from the rates, so there
+            it will behave close to constant either way.
+          </div>
+          <div>
             <label for="f-audio">Audio while re-encoding</label>
             <select id="f-audio" name="audio">
               <option value="copy">Copy through</option>
@@ -1024,7 +1042,9 @@ function sparkline(seriesIn, seriesOut, id) {
 function recordSample(cam) {
   const stats = (cam.runtime && cam.runtime.stats) || {};
   const entry = history.get(cam.id) || { in: [], out: [] };
-  entry.in.push(Number(stats.in_bps) || 0);
+  // The graph has to plot the same number the legend shows, or the two tell
+  // different stories about the same camera.
+  entry.in.push(Number(inBps(cam)) || 0);
   entry.out.push(Number(stats.out_bps) || 0);
   if (entry.in.length > HISTORY_LENGTH) entry.in.shift();
   if (entry.out.length > HISTORY_LENGTH) entry.out.shift();
@@ -2004,9 +2024,31 @@ function encoderText(cam) {
 
 function rateModeText(cam) {
   const stats = (cam.runtime || {}).stats || {};
-  if (!stats.rate_mode) return "measuring…";
-  // Inferred from how much the measured rate varies, not reported by RTSP.
-  return `${stats.rate_mode} (measured, variation ${(stats.rate_cv * 100).toFixed(1)}%)`;
+  // What we encode at is known; what the source does is only ever inferred.
+  const transcoding = ((cam.runtime || {}).transcode || {}).active;
+  const out = transcoding
+    ? `out ${(cam.encode_rate_mode || "vbr").toUpperCase()} (set)`
+    : "";
+  const src = stats.rate_mode
+    ? `source ${stats.rate_mode} (measured, variation ${(stats.rate_cv * 100).toFixed(1)}%)`
+    : "source measuring…";
+  return out ? `${out}, ${src}` : src;
+}
+
+function linkable(cam) {
+  return !!(((cam.runtime || {}).stats || {}).link || {}).available;
+}
+
+function inBps(cam) {
+  const stats = (cam.runtime || {}).stats || {};
+  // When a stream is re-encoded the relay receives ffmpeg's output, so its
+  // "received" counter is the one number that is certainly not what the camera
+  // sent. The kernel's interface counter is upstream of the encoder and does
+  // not care how many processes are in between.
+  if (((cam.runtime || {}).transcode || {}).active && linkable(cam)) {
+    return stats.link.in_bps || 0;
+  }
+  return stats.in_bps || 0;
 }
 
 function flowBlock(cam) {
@@ -2030,7 +2072,7 @@ function flowBlock(cam) {
         <div class="row">
           <span class="swatch" style="background:var(--series-1)"></span>
           <span class="name">In</span>
-          <span class="val">${formatBits(stats.in_bps)}</span>
+          <span class="val">${formatBits(inBps(cam))}</span>
         </div>
         <div class="row">
           <span class="swatch" style="background:var(--series-2)"></span>
@@ -2046,8 +2088,16 @@ function flowBlock(cam) {
                + ${stats.local_readers} internal (${formatBits(stats.local_bps || 0)})
              </div>`
           : ""}
-        ${transcoding ? '<div class="row" style="color:var(--muted);font-size:12px;">'
-          + "In is measured after encoding, not at the source.</div>" : ""}
+        ${transcoding && linkable(cam)
+          ? '<div class="row" style="color:var(--muted);font-size:12px;" '
+            + 'title="The relay only sees what ffmpeg published into it, which is '
+            + 'the encoded rate. The interface counter is upstream of that.">'
+            + "In is measured at the network interface, not at the relay.</div>"
+          : ""}
+        ${transcoding && !linkable(cam)
+          ? '<div class="row" style="color:var(--muted);font-size:12px;">'
+            + "In is measured after encoding, not at the source.</div>"
+          : ""}
       </div>
       <div class="spark-wrap" data-cam="${cam.id}">
         ${sparkline(entry.in, entry.out, cam.id)}

@@ -16,6 +16,16 @@ import shlex
 # What the operator can ask for, mapped onto the ffmpeg codec family.
 OUTPUT_CODECS = ("copy", "h264", "h265")
 HWACCELS = ("none", "vaapi", "qsv", "nvenc")
+# How the encoder is asked to spend the bitrate.
+#
+#   vbr -- a ceiling, not a floor. A still scene costs almost nothing and a
+#          busy one is allowed up to the figure asked for. Fewer bytes stored
+#          and a better picture for the same average.
+#   cbr -- the same rate whether anything is happening or not, padded if
+#          necessary. Wasteful, and the right answer when the link has a fixed
+#          budget or an NVR plans its disk from the advertised rate: a stream
+#          that triples when a lorry goes past is the one that drops frames.
+RATE_MODES = ("vbr", "cbr")
 
 # Source codec names (as ffprobe reports them) per output family.
 _EQUIVALENT = {
@@ -82,6 +92,7 @@ def build_args(
     audio: str = "copy",
     gop: int = 30,
     scale: tuple[int, int] | None = None,
+    rate_mode: str = "vbr",
 ) -> list[str]:
     """Full ffmpeg argument list for one transcoded path."""
     encoder = encoder_name(output_codec, hwaccel)
@@ -114,21 +125,48 @@ def build_args(
     elif hwaccel == "nvenc":
         args += ["-preset", "p4", "-tune", "ll"]
 
-    rate = f"{int(bitrate_kbps)}k"
-    args += [
-        "-b:v", rate,
-        "-maxrate", rate,
-        "-bufsize", f"{int(bitrate_kbps) * 2}k",
-        "-g", str(gop),
-    ]
-
-    if encoder == "libx264":
-        args += ["-profile:v", "main", "-x264-params", f"keyint={gop}:scenecut=0"]
-    elif encoder == "libx265":
-        args += ["-x265-params", f"keyint={gop}:scenecut=0:log-level=error"]
+    args += rate_args(encoder, hwaccel, bitrate_kbps, gop, rate_mode)
 
     args += ["-c:a", "copy"] if audio == "copy" else ["-an"]
     args += ["-f", "rtsp", "-rtsp_transport", "tcp", publish_url]
+    return args
+
+
+def rate_args(encoder: str, hwaccel: str, bitrate_kbps: int, gop: int,
+              rate_mode: str = "vbr") -> list[str]:
+    """How the encoder is told to spend its bitrate.
+
+    Every encoder spells this differently and none of them infer it. Asking for
+    constant and getting capped-variable is the kind of difference you only
+    discover when a disk fills early or a link does not.
+    """
+    cbr = (rate_mode or "vbr").lower() == "cbr"
+    rate = f"{int(bitrate_kbps)}k"
+    args = ["-b:v", rate, "-maxrate", rate]
+    if cbr:
+        # A floor as well as a ceiling, and a buffer of exactly one second: a
+        # larger one is what lets a "constant" rate wander.
+        args += ["-minrate", rate, "-bufsize", rate]
+    else:
+        args += ["-bufsize", f"{int(bitrate_kbps) * 2}k"]
+    args += ["-g", str(gop)]
+
+    extra = f"keyint={gop}:scenecut=0"
+    if encoder == "libx264":
+        # nal-hrd=cbr makes x264 pad to rate rather than merely aim at it.
+        args += ["-profile:v", "main",
+                 "-x264-params", extra + (":nal-hrd=cbr:filler=1" if cbr else "")]
+    elif encoder == "libx265":
+        args += ["-x265-params",
+                 extra + ":log-level=error" + (":strict-cbr=1" if cbr else "")]
+    elif hwaccel == "nvenc":
+        args += ["-rc", "cbr" if cbr else "vbr"]
+    elif hwaccel == "vaapi":
+        args += ["-rc_mode", "CBR" if cbr else "VBR"]
+    # QSV has no flag for this: it infers the mode from the rates it was given,
+    # and a ceiling equal to the target reads as constant. Asking for variable
+    # on QSV therefore gets something close to constant. Saying so is better
+    # than lowering the target behind the operator's back to prove a point.
     return args
 
 
